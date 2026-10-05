@@ -34,8 +34,8 @@ export const listEnvironments = defineTool({
         .enum(ENVIRONMENT_STATUSES)
         .optional()
         .describe(
-          "Only environments in this status. The API lists only active environments, so stopped, paused and " +
-            "errored ones are usually missing from the list, filtered or not.",
+          "Only environments in this status. Stopped, paused and errored environments are listed too; " +
+            "deleted ones never are.",
         ),
       ...paginationInput,
     })

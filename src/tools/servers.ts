@@ -45,7 +45,9 @@ export const getServer = defineTool({
       // have none). Say so instead of letting the agent think it is gone.
       if (err instanceof OecshApiError && err.status === 404) {
         throw new OecshApiError(
-          `${err.message} If the key is project-scoped, single servers always answer 404; use oecsh_list_servers instead.`,
+          `${err.message} If the key is project-scoped, single servers always answer 404; use oecsh_list_servers instead. ` +
+            "An environment's server_id that oecsh_list_servers does not return is a server managed by oec.sh " +
+            "(shared hosting), whose details are not shown to customers.",
           404,
           err.code,
         );

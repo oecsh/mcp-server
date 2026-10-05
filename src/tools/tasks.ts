@@ -36,7 +36,9 @@ const READ_LIMIT = 120;
 export const listDeployments = defineTool({
   name: "oecsh_list_deployments",
   title: "List deployments",
-  description: "Read only: lists an environment's deploy tasks, newest first, with status, timing and error message.",
+  description:
+    "Read only: lists an environment's deploy tasks, newest first, with status, timing and error message. " +
+    "A failed task with no started_at never ran (for example, another deployment was already running).",
   tier: "read",
   input: z.object({ environment_id: id("Environment id"), ...paginationInput }).strict(),
   output: z.object(pageOutputShape(task)),
