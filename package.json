@@ -1,0 +1,46 @@
+{
+  "name": "@oecsh/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for oec.sh: operate your Odoo servers, projects and environments from an AI assistant with your own API key",
+  "license": "MIT",
+  "homepage": "https://doc.oec.sh/api-reference/mcp-server/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oecsh/mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/oecsh/mcp-server/issues"
+  },
+  "mcpName": "sh.oec/mcp-server",
+  "type": "module",
+  "bin": {
+    "oecsh-mcp": "dist/stdio.js"
+  },
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/stdio.js",
+    "start:http": "node dist/http.js",
+    "test": "tsc -p tsconfig.test.json && vitest run",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
