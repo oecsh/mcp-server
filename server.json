@@ -35,19 +35,5 @@
         }
       ]
     }
-  ],
-  "remotes": [
-    {
-      "type": "streamable-http",
-      "url": "https://mcp.oec.sh/mcp",
-      "headers": [
-        {
-          "name": "Authorization",
-          "description": "Bearer followed by your oec.sh API key, e.g. Bearer oec_live_ro_...",
-          "isRequired": true,
-          "isSecret": true
-        }
-      ]
-    }
   ]
 }
