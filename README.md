@@ -71,7 +71,7 @@ Do not commit a file that contains your key.
 
 ## Hosted mode (streamable HTTP)
 
-Not live yet: until `https://mcp.oec.sh/mcp` is announced, use the package as shown above. Once it is live, there is nothing to install: your client sends your API key with every request in the `Authorization` header, the server forwards it to the API for that request only, and keeps nothing.
+`https://mcp.oec.sh/mcp`. Nothing to install: your client sends your API key with every request in the `Authorization` header, the server forwards it to the API for that request only, and keeps nothing.
 
 Claude Code:
 
