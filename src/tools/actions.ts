@@ -152,9 +152,10 @@ export const reinitializeModules = defineTool({
     .strict(),
   output: actionOutput,
   annotations: destructive(false),
-  async run({ environment_id, modules: mods, confirm }, { client, signal }) {
+  async run({ environment_id, modules: mods, confirm }, ctx) {
+    const { client, signal } = ctx;
     const env = await client.get<{ name?: string }>(apiPath`/environments/${environment_id}`, { signal });
-    checkConfirm(confirm, env.name, "environment's name");
+    await checkConfirm(confirm, env.name, "environment's name", `Reinitialize ${mods.join(", ").slice(0, 200)} on environment`, ctx);
     return runAction(client, apiPath`/environments/${environment_id}/quick-update`, "Reinitialize", signal, {
       mode: "reinitialize_specific",
       modules: mods,

@@ -4,7 +4,7 @@ import { apiPath, type OecshClient } from "../client.js";
 import { OecshApiError } from "../errors.js";
 import { decodeCursor, encodeCursor, page, pageOutputShape, paginationInput } from "../pagination.js";
 import { actionResult, BACKUP_STATUSES, BACKUP_TYPES, backup, id, RETENTION_TYPES } from "../schemas.js";
-import { checkConfirm, defineTool, destructive, nextStepForTask, READ, write } from "./define.js";
+import { checkConfirm, defineTool, destructive, nextStepForTask, READ_UNTRUSTED, UNTRUSTED_TEXT_NOTICE, withNotice, write } from "./define.js";
 
 type Row = Record<string, unknown>;
 
@@ -31,8 +31,8 @@ export const listBackups = defineTool({
       ...paginationInput,
     })
     .strict(),
-  output: z.object(pageOutputShape(backup)),
-  annotations: READ,
+  output: z.object({ notice: z.string(), ...pageOutputShape(backup) }),
+  annotations: READ_UNTRUSTED,
   async run({ environment_id, status, backup_type, limit, cursor }, { client, signal }) {
     const tool = "oecsh_list_backups";
     const resource = `${environment_id}:${status ?? ""}:${backup_type ?? ""}`;
@@ -53,7 +53,7 @@ export const listBackups = defineTool({
     const end = offset + items.length;
     const next = items.length > 0 && end < res.total ? encodeCursor(tool, resource, { k: "offset", o: end }) : null;
     const out = page(items, res.total, next);
-    return { data: { ...out }, summary: `${out.count} of ${out.total} backups of environment ${environment_id}.` };
+    return { data: { notice: UNTRUSTED_TEXT_NOTICE, ...out }, summary: `${out.count} of ${out.total} backups of environment ${environment_id}.` };
   },
 });
 
@@ -125,6 +125,14 @@ async function getOwnedBackup(client: OecshClient, backupId: string, signal: Abo
   return { b, envId: b.environment_id };
 }
 
+// Anyone holding these links can download the whole database until they
+// expire, and from now on they sit in the chat transcript wherever that is
+// kept. Hence the short default lifetime and this warning in every answer.
+const LINK_WARNING =
+  "These links are now in the conversation transcript, and anyone holding one can download the full " +
+  "database until it expires. Give them only to the user, and do not repeat them elsewhere. If the " +
+  "transcript is shared or stored where others can read it, the links stay usable until expires_at.";
+
 export const getBackupDownloadLinks = defineTool({
   name: "oecsh_get_backup_download_links",
   title: "Get backup download links",
@@ -144,8 +152,8 @@ export const getBackupDownloadLinks = defineTool({
         .int()
         .min(300)
         .max(3600)
-        .default(900)
-        .describe("Link lifetime in seconds, 300 to 3600 (default 900)."),
+        .default(300)
+        .describe("Link lifetime in seconds, 300 to 3600 (default 300)."),
     })
     .strict(),
   output: z.looseObject({
@@ -155,11 +163,13 @@ export const getBackupDownloadLinks = defineTool({
     manifest_url: z.string().nullable().optional(),
     expires_in: z.number(),
     expires_at: z.string().nullable().optional(),
+    link_warning: z.string(),
   }),
   // Read-only at the API, but hands out the whole database: marked
   // destructive and not read-only so clients ask the user before running it.
   annotations: destructive(false),
-  async run({ backup_id, environment_id, confirm, expires_in }, { client, signal }) {
+  async run({ backup_id, environment_id, confirm, expires_in }, ctx) {
+    const { client, signal } = ctx;
     const { b, envId } = await getOwnedBackup(client, backup_id, signal);
     if (envId.toLowerCase() !== environment_id.toLowerCase()) {
       throw new OecshApiError(
@@ -168,9 +178,12 @@ export const getBackupDownloadLinks = defineTool({
         "not_found",
       );
     }
-    checkConfirm(confirm, await environmentName(client, b, envId, signal), "environment's name");
+    await checkConfirm(confirm, await environmentName(client, b, envId, signal), "environment's name", "Create download links for a backup of environment", ctx);
     const links = await client.get<Row>(apiPath`/backups/${backup_id}/download`, { query: { expires_in }, signal });
-    return { data: links, summary: `Download links for backup ${backup_id}, valid ${expires_in} s.` };
+    return {
+      data: { ...links, link_warning: LINK_WARNING },
+      summary: `Download links for backup ${backup_id}, valid ${expires_in} s. ${LINK_WARNING}`,
+    };
   },
 });
 
@@ -182,11 +195,11 @@ export const getBackup = defineTool({
     "a snapshot of the environment, project and server as they were when it was taken.",
   tier: "read",
   input: z.object({ backup_id: id("Backup id") }).strict(),
-  output: backup,
-  annotations: READ,
+  output: backup.extend({ notice: z.string() }),
+  annotations: READ_UNTRUSTED,
   async run({ backup_id }, { client, signal }) {
     const b = await client.get<Row>(apiPath`/backups/${backup_id}`, { signal });
-    return { data: b, summary: `Backup ${backup_id} is ${String(b.status)}.` };
+    return { data: withNotice(b), summary: `Backup ${backup_id} is ${String(b.status)}.` };
   },
 });
 
@@ -219,9 +232,11 @@ export const restoreBackup = defineTool({
     .strict(),
   output: z.object({ ...actionResult, backup_id: z.string() }),
   annotations: destructive(false),
-  async run({ backup_id, confirm_environment_name }, { client, signal }) {
+  async run({ backup_id, confirm_environment_name }, ctx) {
+    const { client, signal } = ctx;
     const { b, envId } = await getOwnedBackup(client, backup_id, signal);
-    checkConfirm(confirm_environment_name, await environmentName(client, b, envId, signal), "environment's name");
+    const name = await environmentName(client, b, envId, signal);
+    await checkConfirm(confirm_environment_name, name, "environment's name", "Overwrite with a backup the environment", ctx);
     const res = await client.post<RestoreResponse>(apiPath`/backups/${backup_id}/restore`, {
       idempotency: "Idempotency-Key",
       confirmRestore: true,

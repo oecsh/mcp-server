@@ -4,11 +4,14 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { FetchLike } from "../src/client.js";
-import { clientAddress, type HttpConfig, loadHttpConfig, startHttpServer } from "../src/http.js";
-import { BASE, json, ORG, RO_KEY, RW_KEY } from "./helpers.js";
+import { canonicalIp, clientAddress, type HttpConfig, loadHttpConfig, parseNetworks, startHttpServer } from "../src/http.js";
+import { BASE, json, ORG, RO_KEY, RW_KEY, TASK } from "./helpers.js";
 
 const OTHER_RW_KEY = `oec_live_rw_${"Other_".repeat(7)}K`;
 const PROXY_SECRET = "proxy-secret-0123456789abcdefghijklmnopqrstuv";
+// A Cloudflare edge address, as Traefik appends it to X-Forwarded-For; the
+// test server's connections come from loopback, where Traefik would sit.
+const VIA_CLOUDFLARE = { "x-forwarded-for": "162.158.1.2" };
 
 interface Sent {
   url: string;
@@ -283,7 +286,7 @@ describe("HTTP mode", () => {
       const api = countingApi();
       const { url } = await start({ fetch: api.fetch, clock: manualClock(), proxySecret: PROXY_SECRET });
       const from = (ip: string, key: string) =>
-        post(url, getOrg, { authorization: `Bearer ${key}`, "cf-connecting-ip": ip });
+        post(url, getOrg, { authorization: `Bearer ${key}`, "cf-connecting-ip": ip, ...VIA_CLOUDFLARE });
       const results = [];
       for (let i = 0; i < 10; i++) results.push(await from("203.0.113.7", bogus(i)));
       expect(api.refusals()).toBeLessThanOrEqual(6);
@@ -298,6 +301,113 @@ describe("HTTP mode", () => {
       expect((await from("198.51.100.9", bogus(20))).status).toBe(200);
       // The first caller is still paused, whatever key it tries.
       expect((await from("203.0.113.7", `oec_live_rw_${"Fresh_".repeat(5)}`)).status).toBe(429);
+    });
+
+    it("gives the budget back for a call that never reached the API", async () => {
+      const api = countingApi();
+      const sent: string[] = [];
+      const fetch: FetchLike = (url, init) => {
+        sent.push(url);
+        return api.fetch(url, init);
+      };
+      const { url } = await start({ fetch, clock: manualClock() });
+      const badArgs = rpc("tools/call", { name: "oecsh_get_environment", arguments: { environment_id: "not-a-uuid" } });
+      // More than the budget of three unknown tool calls, each refused by the schema.
+      for (let i = 0; i < 8; i++) {
+        const r = await post(url, badArgs, { authorization: `Bearer ${bogus(i)}` });
+        expect(r.status, String(i)).toBe(200);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(sent).toHaveLength(0);
+      // The budget is still whole: three unknown keys reach the API before the pause.
+      const results = [];
+      for (let i = 10; i < 14; i++) results.push((await post(url, getOrg, { authorization: `Bearer ${bogus(i)}` })).status);
+      expect(results).toEqual([200, 200, 200, 429]);
+    });
+
+    describe("tool calls running at once", () => {
+      // oecsh_get_task makes one API request, so each running call holds one.
+      const getTask = rpc("tools/call", { name: "oecsh_get_task", arguments: { task_id: TASK } });
+
+      /** An API that, once told to, holds every answer until released. */
+      function holdingApi() {
+        let hold = false;
+        let release!: () => void;
+        const gate = new Promise<void>((r) => (release = r));
+        let held = 0;
+        const fetch: FetchLike = async () => {
+          if (hold) {
+            held++;
+            await gate;
+          }
+          return json(200, { id: TASK, status: "running" });
+        };
+        return { fetch, hold: () => void (hold = true), release: () => release(), held: () => held };
+      }
+      const until = async (cond: () => boolean) => {
+        for (let i = 0; i < 400 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+      };
+
+      it("are capped per key, so a revoked key cannot fire a burst of refusals", async () => {
+        const api = holdingApi();
+        const { url } = await start({ fetch: api.fetch });
+        const auth = { authorization: `Bearer ${RW_KEY}` };
+        // Both keys work once first: a key the API accepted skips the refusal
+        // budget, which is the case the cap is for.
+        expect((await post(url, getTask, auth)).status).toBe(200);
+        expect((await post(url, getTask, { authorization: `Bearer ${OTHER_RW_KEY}` })).status).toBe(200);
+        api.hold();
+        const first = [0, 1, 2].map(() => post(url, getTask, auth));
+        await until(() => api.held() >= 3);
+        const fourth = await post(url, getTask, auth);
+        expect(fourth.status).toBe(429);
+        expect(fourth.json.error.message).toContain("with this API key");
+        expect(fourth.headers.get("retry-after")).toBe("1");
+        expect(api.held()).toBe(3);
+        // Another key is not held back by this one.
+        const other = post(url, getTask, { authorization: `Bearer ${OTHER_RW_KEY}` });
+        await until(() => api.held() >= 4);
+        api.release();
+        for (const r of await Promise.all([...first, other])) expect(r.status).toBe(200);
+        await new Promise((r) => setTimeout(r, 10));
+        // Once they finished, the key may call again.
+        expect((await post(url, getTask, auth)).status).toBe(200);
+      });
+
+      it("are capped per caller address when the API sees addresses", async () => {
+        const api = holdingApi();
+        const { url } = await start({ fetch: api.fetch, proxySecret: PROXY_SECRET });
+        const key = (i: number) => `oec_live_ro_${"Caller_".repeat(4)}${String(i).padStart(2, "0")}`;
+        const from = (ip: string, i: number) =>
+          post(url, getTask, { authorization: `Bearer ${key(i)}`, "cf-connecting-ip": ip, ...VIA_CLOUDFLARE });
+        // Each key works once first, so the refusal budget for unknown keys does not stop them.
+        for (let i = 0; i < 12; i++) expect((await from("203.0.113.7", i)).status).toBe(200);
+        api.hold();
+        const running = Array.from({ length: 10 }, (_, i) => from("203.0.113.7", i));
+        await until(() => api.held() >= 10);
+        const eleventh = await from("203.0.113.7", 10);
+        expect(eleventh.status).toBe(429);
+        expect(eleventh.json.error.message).toContain("from your address");
+        // Another address is not held back.
+        const elsewhere = from("198.51.100.9", 11);
+        await until(() => api.held() >= 11);
+        expect(api.held()).toBe(11);
+        api.release();
+        for (const r of await Promise.all([...running, elsewhere])) expect(r.status).toBe(200);
+      });
+
+      it("are not capped per address without the proxy secret (all users share one)", async () => {
+        const api = holdingApi();
+        const { url } = await start({ fetch: api.fetch });
+        const key = (i: number) => `oec_live_ro_${"Shared_".repeat(4)}${String(i).padStart(2, "0")}`;
+        for (let i = 0; i < 12; i++) expect((await post(url, getTask, { authorization: `Bearer ${key(i)}` })).status).toBe(200);
+        api.hold();
+        const running = Array.from({ length: 12 }, (_, i) => post(url, getTask, { authorization: `Bearer ${key(i)}` }));
+        await until(() => api.held() >= 12);
+        expect(api.held()).toBe(12);
+        api.release();
+        for (const r of await Promise.all(running)) expect(r.status).toBe(200);
+      });
     });
 
     it("gives the budget back once a new key turns out to work", async () => {
@@ -331,7 +441,7 @@ describe("HTTP mode", () => {
     it("sends the secret and the caller's address from the configured header", async () => {
       const api = recordingApi();
       const { url } = await start({ fetch: api.fetch, proxySecret: PROXY_SECRET });
-      const r = await post(url, getOrg, { ...auth, "cf-connecting-ip": "203.0.113.7" });
+      const r = await post(url, getOrg, { ...auth, "cf-connecting-ip": "203.0.113.7", ...VIA_CLOUDFLARE });
       expect(r.json.result.isError).toBeFalsy();
       expect(api.sent).toHaveLength(2);
       for (const s of api.sent) {
@@ -344,16 +454,41 @@ describe("HTTP mode", () => {
     it("reads another header when configured, and accepts IPv6", async () => {
       const api = recordingApi();
       const { url } = await start({ fetch: api.fetch, proxySecret: PROXY_SECRET, clientIpHeader: "x-real-ip" });
-      await post(url, getOrg, { ...auth, "x-real-ip": "2001:db8::42", "cf-connecting-ip": "203.0.113.7" });
+      await post(url, getOrg, { ...auth, "x-real-ip": "2001:DB8:0::42", "cf-connecting-ip": "203.0.113.7", ...VIA_CLOUDFLARE });
+      // One spelling, whatever the client wrote.
       expect(api.sent[0]!.headers.get("x-oecsh-client-ip")).toBe("2001:db8::42");
+    });
+
+    it("ignores the address header when the hop in front is not Cloudflare or a trusted proxy", async () => {
+      for (const [headers, expected] of [
+        // Straight to the origin (no proxy in front): the connection is the caller.
+        [{ "cf-connecting-ip": "203.0.113.7" }, "127.0.0.1"],
+        // Through the local proxy but not from Cloudflare: that hop is the caller.
+        [{ "cf-connecting-ip": "203.0.113.7", "x-forwarded-for": "203.0.113.7, 198.51.100.4" }, "198.51.100.4"],
+      ] as const) {
+        const api = recordingApi();
+        const { url } = await start({ fetch: api.fetch, proxySecret: PROXY_SECRET });
+        await post(url, getOrg, { ...auth, ...headers });
+        expect(api.sent[0]!.headers.get("x-oecsh-client-ip")).toBe(expected);
+        await new Promise<void>((resolve) => server!.close(() => resolve()));
+        server = undefined;
+      }
+      const api = recordingApi();
+      const { url } = await start({
+        fetch: api.fetch,
+        proxySecret: PROXY_SECRET,
+        trustedProxies: parseNetworks(["198.51.100.0/24"], "test"),
+      });
+      await post(url, getOrg, { ...auth, "cf-connecting-ip": "203.0.113.7", "x-forwarded-for": "198.51.100.4" });
+      expect(api.sent[0]!.headers.get("x-oecsh-client-ip")).toBe("203.0.113.7");
     });
 
     it("falls back to the connection's address when the header is missing or not one IP address", async () => {
       for (const value of [undefined, "not-an-ip", "203.0.113.7, 198.51.100.1", "203.0.113.7:443", ""]) {
         const api = recordingApi();
         const { url } = await start({ fetch: api.fetch, proxySecret: PROXY_SECRET });
-        await post(url, getOrg, value === undefined ? auth : { ...auth, "cf-connecting-ip": value });
-        expect(api.sent[0]!.headers.get("x-oecsh-client-ip"), String(value)).toBe("127.0.0.1");
+        await post(url, getOrg, value === undefined ? auth : { ...auth, "cf-connecting-ip": value, ...VIA_CLOUDFLARE });
+        expect(api.sent[0]!.headers.get("x-oecsh-client-ip"), String(value)).toBe(value === undefined ? "127.0.0.1" : "162.158.1.2");
         expect(api.sent[0]!.headers.get("x-oecsh-mcp-proxy")).toBe(PROXY_SECRET);
         await new Promise<void>((resolve) => server!.close(() => resolve()));
         server = undefined;
@@ -442,13 +577,46 @@ describe("clientAddress", () => {
   const cfg = { clientIpHeader: "cf-connecting-ip" } as HttpConfig;
   const req = (headers: Record<string, string>, remoteAddress?: string) =>
     ({ headers, socket: { remoteAddress } }) as unknown as IncomingMessage;
+  const cf = (ip: string, xff = "162.158.1.2") => ({ "cf-connecting-ip": ip, "x-forwarded-for": xff });
 
-  it("prefers a valid address in the header, else the socket's, else nothing", () => {
-    expect(clientAddress(req({ "cf-connecting-ip": " 203.0.113.7 " }, "10.0.0.2"), cfg)).toBe("203.0.113.7");
-    expect(clientAddress(req({ "cf-connecting-ip": "evil" }, "10.0.0.2"), cfg)).toBe("10.0.0.2");
+  it("believes the header only behind Cloudflare, else takes the hop in front, else the socket", () => {
+    // Traefik (private address) in front, Cloudflare in front of it.
+    expect(clientAddress(req(cf(" 203.0.113.7 "), "10.0.0.2"), cfg)).toBe("203.0.113.7");
+    expect(clientAddress(req(cf("203.0.113.7", "2400:cb00::1"), "172.18.0.5"), cfg)).toBe("203.0.113.7");
+    expect(clientAddress(req(cf("evil"), "10.0.0.2"), cfg)).toBe("162.158.1.2");
+    // A caller writing both headers itself through Traefik: the hop Traefik appended is not Cloudflare.
+    expect(clientAddress(req(cf("192.0.2.1", "162.158.1.2, 198.51.100.4"), "10.0.0.2"), cfg)).toBe("198.51.100.4");
+    // A caller reaching the port directly from outside: its own headers count for nothing.
+    expect(clientAddress(req(cf("192.0.2.1"), "198.51.100.4"), cfg)).toBe("198.51.100.4");
+    expect(clientAddress(req({ "cf-connecting-ip": "192.0.2.1" }, "162.158.1.2"), cfg)).toBe("192.0.2.1");
+    // A last hop that is not an address falls back to the socket.
+    expect(clientAddress(req(cf("192.0.2.1", "unknown"), "10.0.0.2"), cfg)).toBe("10.0.0.2");
     expect(clientAddress(req({}, "::ffff:10.0.0.2"), cfg)).toBe("10.0.0.2");
     expect(clientAddress(req({}, "2001:db8::1"), cfg)).toBe("2001:db8::1");
-    expect(clientAddress(req({ "cf-connecting-ip": "evil" }), cfg)).toBeUndefined();
+    expect(clientAddress(req(cf("203.0.113.7")), cfg)).toBeUndefined();
+  });
+
+  it("believes a configured trusted proxy, which may also connect directly", () => {
+    const trusted = { ...cfg, trustedProxies: parseNetworks(["198.51.100.0/24", "2001:db8:1::5"], "test") };
+    expect(clientAddress(req({ "cf-connecting-ip": "203.0.113.7" }, "198.51.100.4"), trusted)).toBe("203.0.113.7");
+    expect(clientAddress(req(cf("203.0.113.7", "2001:db8:1::5"), "10.0.0.2"), trusted)).toBe("203.0.113.7");
+    expect(clientAddress(req(cf("203.0.113.7", "2001:db8:1::6"), "10.0.0.2"), trusted)).toBe("2001:db8:1::6");
+  });
+
+  it("gives every spelling of one address the same form", () => {
+    for (const spelling of ["2001:DB8::1", "2001:db8:0:0:0:0:0:1", "[2001:db8::1]", "2001:db8::1%eth0", " 2001:0db8::0001 "]) {
+      expect(clientAddress(req(cf(spelling), "10.0.0.2"), cfg), spelling).toBe("2001:db8::1");
+    }
+    expect(clientAddress(req(cf("::ffff:203.0.113.7"), "10.0.0.2"), cfg)).toBe("203.0.113.7");
+    expect(clientAddress(req(cf("203.0.113.7"), "::ffff:10.0.0.2"), cfg)).toBe("203.0.113.7");
+    expect(clientAddress(req(cf("203.0.113.7", "::ffff:162.158.1.2"), "10.0.0.2"), cfg)).toBe("203.0.113.7");
+  });
+
+  it("canonicalIp refuses anything but one address", () => {
+    for (const bad of ["", "x", "01.2.3.4", "1.2.3.4:80", "1.2.3.4, 5.6.7.8", "[::1]:80", "::g"]) {
+      expect(canonicalIp(bad), bad).toBeUndefined();
+    }
+    expect(canonicalIp("::FFFF:102:304")).toBe("1.2.3.4");
   });
 });
 
@@ -518,6 +686,17 @@ describe("loadHttpConfig", () => {
       }
       expect(message).toMatch(/printable ASCII without spaces/);
       expect(message).not.toContain(PROXY_SECRET);
+    }
+  });
+
+  it("reads trusted proxies as addresses and CIDR ranges, refusing anything else", () => {
+    expect(loadHttpConfig({}).trustedProxies).toBeUndefined();
+    const cfg = loadHttpConfig({ OECSH_MCP_TRUSTED_PROXIES: "198.51.100.0/24, 2001:db8::1" });
+    expect(cfg.trustedProxies?.check("198.51.100.200", "ipv4")).toBe(true);
+    expect(cfg.trustedProxies?.check("2001:db8::1", "ipv6")).toBe(true);
+    expect(cfg.trustedProxies?.check("198.51.101.1", "ipv4")).toBe(false);
+    for (const bad of ["198.51.100.0/33", "nope", "10.0.0.0/8/1", "10.0.0.0/x", "2001:db8::/129"]) {
+      expect(() => loadHttpConfig({ OECSH_MCP_TRUSTED_PROXIES: bad }), bad).toThrow(/OECSH_MCP_TRUSTED_PROXIES/);
     }
   });
 

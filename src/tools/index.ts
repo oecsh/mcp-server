@@ -11,7 +11,7 @@ import type { ToolDef } from "./define.js";
 import { createEnvironment, deleteEnvironment, getEnvironment, listEnvironments, updateEnvironment } from "./environments.js";
 import { getEnvironmentMetrics, getRuntimeLogs, getServerMetrics } from "./observability.js";
 import { getOrganization, revokeApiKey } from "./org.js";
-import { createProject, deleteProject, getProject, listProjects, updateProject } from "./projects.js";
+import { createProject, deleteProject, getProject, listProjects, updateProject, updateProjectRepository } from "./projects.js";
 import { getServer, listServers } from "./servers.js";
 import { getTask, getTaskLog, listDeployments, waitForTask } from "./tasks.js";
 import {
@@ -63,12 +63,10 @@ export const ALL_TOOLS: readonly ToolDef[] = [
   updateProject,
   createEnvironment,
   updateEnvironment,
-  createWebhook,
-  updateWebhook,
-  testWebhook,
 
   // Opt-in "destructive": full-access key, confirm argument (restore:
-  // confirm_environment_name).
+  // confirm_environment_name; webhook create, re-point and test: the host
+  // the data goes to).
   deleteEnvironment,
   deleteProject,
   deleteWebhook,
@@ -76,6 +74,13 @@ export const ALL_TOOLS: readonly ToolDef[] = [
   revokeApiKey,
   reinitializeModules,
   restoreBackup,
+  updateProjectRepository,
+
+  // They send data to a URL the caller names, which injected text could
+  // choose.
+  createWebhook,
+  updateWebhook,
+  testWebhook,
 
   // Opt-in "backup-download": any key (the API serves it to read-only keys).
   getBackupDownloadLinks,

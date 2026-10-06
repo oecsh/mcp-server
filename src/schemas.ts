@@ -184,9 +184,19 @@ export const moduleName = z
   .describe("Technical module name, e.g. sale_custom.");
 export const MAX_MODULES = 50;
 
+// Only a real branch name: a ref path (refs/..., or a pull/merge request head
+// such as pull/1/head) or a bare commit id would deploy code that is on no
+// branch of the repository, e.g. a fork's pull request. A leading '-' would
+// be read as an option by git.
 export const branch = z
   .string()
   .min(1)
   .max(255)
   .regex(/^[^\s~^:?*[\\\x00-\x1f\x7f]+$/, "branch name contains characters git does not allow")
-  .refine((v) => !v.includes("..") && !v.startsWith("/"), "branch name cannot contain '..' or start with '/'");
+  .refine((v) => !v.includes("..") && !v.startsWith("/"), "branch name cannot contain '..' or start with '/'")
+  .refine((v) => !v.startsWith("-"), "branch name cannot start with '-'")
+  .refine(
+    (v) => !/^(refs|pull|pull-requests|merge-requests)\//i.test(v),
+    "use a branch name, not a ref path (refs/..., pull/..., pull-requests/..., merge-requests/...)",
+  )
+  .refine((v) => !/^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(v), "use a branch name, not a commit id");

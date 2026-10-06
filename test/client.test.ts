@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { apiPath, normaliseBaseUrl, OecshClient } from "../src/client.js";
 import { OecshApiError } from "../src/errors.js";
-import { BASE, ENV, fakeClock, json, mockApi, RW_KEY } from "./helpers.js";
+import { BASE, call, connect, ENV, fakeClock, json, mockApi, RW_KEY, text } from "./helpers.js";
 
-function client(fetch: ReturnType<typeof mockApi>["fetch"], extra: { timeoutMs?: number } = {}) {
+function client(fetch: ReturnType<typeof mockApi>["fetch"], extra: { timeoutMs?: number; hosted?: boolean } = {}) {
   const clock = fakeClock();
   return { c: new OecshClient({ apiKey: RW_KEY, baseUrl: BASE, fetch, clock, ...extra }), clock };
 }
@@ -144,6 +144,60 @@ describe("OecshClient", () => {
     expect(err).toMatchObject({ code: "unexpected_redirect", status: 307 });
     expect(seen).toHaveLength(1);
     expect(seen[0]!.redirect).toBe("manual");
+  });
+
+  it("names the API host and quotes a proxy page locally, but neither in hosted mode", async () => {
+    const host = new URL(BASE).host;
+    const proxyPage = async () => new Response("upstream api-internal:8000 refused\n<html>", { status: 502 });
+    const boom = async () => {
+      throw new TypeError("fetch failed");
+    };
+    const redirect = async () => new Response(null, { status: 302, headers: { location: "https://x.example" } });
+    const hang = (_: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+
+    const local = await Promise.all(
+      [proxyPage, boom, redirect, hang].map((f) => client(f, { timeoutMs: 20 }).c.get(apiPath`/org`).catch((e: Error) => e.message)),
+    );
+    expect(local[0]).toContain("api-internal:8000");
+    for (const m of local.slice(1)) expect(m).toContain(host);
+
+    const hosted = await Promise.all(
+      [proxyPage, boom, redirect, hang].map((f) =>
+        client(f, { timeoutMs: 20, hosted: true }).c.get(apiPath`/org`).catch((e: Error) => e.message),
+      ),
+    );
+    for (const m of hosted) {
+      expect(m).not.toContain(host);
+      expect(m).not.toContain("api-internal");
+      expect(m).toContain("oec.sh API");
+    }
+    // JSON error answers are the API's own and still come through.
+    const apiError = async () => json(400, { detail: { error: "bad", message: "branch not found" } });
+    expect(await client(apiError, { hosted: true }).c.get(apiPath`/org`).catch((e: Error) => e.message)).toContain("branch not found");
+  });
+
+  it("a 2xx answer that is not JSON is an error, without its text in hosted mode", async () => {
+    const page = async () => new Response("<html>gateway api-internal:8000 ok</html>\nmore", { status: 200 });
+    const hosted = await client(page, { hosted: true }).c.post(apiPath`/org`).catch((e: unknown) => e);
+    expect(hosted).toBeInstanceOf(OecshApiError);
+    expect(hosted).toMatchObject({ code: "unexpected_answer", status: 200 });
+    const m = (hosted as Error).message;
+    expect(m).toContain("unexpected answer from the oec.sh API");
+    for (const leak of ["api-internal", "<html>", "gateway", new URL(BASE).host]) expect(m).not.toContain(leak);
+
+    const local = await client(page).c.get(apiPath`/org`).catch((e: Error) => e.message);
+    expect(local).toContain("unexpected answer from the oec.sh API");
+    expect(local).toContain("api-internal:8000");
+    expect(local).not.toContain("more");
+  });
+
+  it("the server runs its client in hosted mode over HTTP only", async () => {
+    const proxyPage = async () => new Response("upstream api-internal:8000 refused", { status: 502 });
+    const stdio = await connect({ fetch: proxyPage, mode: "stdio" });
+    const http = await connect({ fetch: proxyPage, mode: "http" });
+    expect(text(await call(stdio, "oecsh_get_task", { task_id: ENV }))).toContain("api-internal");
+    expect(text(await call(http, "oecsh_get_task", { task_id: ENV }))).not.toContain("api-internal");
   });
 
   it("reports a refused key, and only a refused key", async () => {

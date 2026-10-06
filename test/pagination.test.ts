@@ -147,7 +147,10 @@ describe("list tools share one pagination shape", () => {
       expect(props.limit).toMatchObject({ default: 20, maximum: 100 });
       expect(props.cursor).toBeDefined();
       const out = t.outputSchema?.properties as Record<string, unknown>;
-      expect(Object.keys(out).sort()).toEqual(["count", "has_more", "items", "next_cursor", "total"]);
+      // Lists whose items carry text others wrote (error messages, notes) also have the notice.
+      const page = Object.keys(out).filter((k) => k !== "notice").sort();
+      expect(page).toEqual(["count", "has_more", "items", "next_cursor", "total"]);
+      expect("notice" in out).toBe(["oecsh_list_deployments", "oecsh_list_backups"].includes(t.name));
     }
   });
 });

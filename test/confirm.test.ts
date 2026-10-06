@@ -1,3 +1,4 @@
+import type { ElicitRequest, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 
 import { actionRow, BKP, call, connect, ENV, envRow, json, KEY_ID, mockApi, PRJ, type Route, text, WH } from "./helpers.js";
@@ -24,8 +25,28 @@ const backupRow = (over: Record<string, unknown> = {}) => ({
 const cases: ConfirmCase[] = [
   { tool: "oecsh_delete_environment", args: { environment_id: ENV }, lookup: { [`GET /environments/${ENV}`]: envRow() }, realName: "staging-acme" },
   { tool: "oecsh_delete_project", args: { project_id: PRJ }, lookup: { [`GET /projects/${PRJ}`]: { id: PRJ, name: "acme" } }, realName: "acme" },
+  {
+    tool: "oecsh_update_project_repository",
+    args: { project_id: PRJ, git_repo_url: "https://github.com/acme/addons" },
+    lookup: { [`GET /projects/${PRJ}`]: { id: PRJ, name: "acme" } },
+    realName: "acme",
+  },
   { tool: "oecsh_delete_webhook", args: { webhook_id: WH }, lookup: { [`GET /webhooks/${WH}`]: webhookRow }, realName: webhookRow.url },
   { tool: "oecsh_rotate_webhook_secret", args: { webhook_id: WH }, lookup: { [`GET /webhooks/${WH}`]: webhookRow }, realName: webhookRow.url },
+  // Webhooks that send data: the host the data goes to.
+  {
+    tool: "oecsh_create_webhook",
+    args: { url: "https://hooks.example.com/oec", events: ["deploy.completed"] },
+    lookup: {},
+    realName: "hooks.example.com",
+  },
+  {
+    tool: "oecsh_update_webhook",
+    args: { webhook_id: WH, url: "https://alerts.example.org/oec" },
+    lookup: {},
+    realName: "alerts.example.org",
+  },
+  { tool: "oecsh_test_webhook", args: { webhook_id: WH }, lookup: { [`GET /webhooks/${WH}`]: webhookRow }, realName: "hooks.example.com" },
   { tool: "oecsh_revoke_api_key", args: { key_id: KEY_ID }, lookup: { "GET /org/api-keys": [{ id: KEY_ID, name: "ci key" }] }, realName: "ci key" },
   {
     tool: "oecsh_reinitialize_modules",
@@ -171,5 +192,162 @@ describe("confirm must repeat the real resource's name", () => {
     const ok = await call(client, "oecsh_get_backup_download_links", { ...args, confirm: "staging-acme-old" });
     expect(ok.isError, text(ok)).toBeFalsy();
     expect(`${api.calls.at(-1)!.method} ${api.calls.at(-1)!.path}`).toBe(download);
+  });
+});
+
+describe("webhook destinations are confirmed by host", () => {
+  const created = { ...webhookRow, secret: "whsec_abc" };
+
+  // The part of a URL before '@' is a user name, not where the data goes.
+  it("create refuses a URL whose user info hides the host it really sends to", async () => {
+    const api = mockApi({ "POST /webhooks": json(201, created) });
+    const client = await connect({ fetch: api.fetch, allow: "destructive" });
+    const url = "https://hooks.example.com@collector.example.net/x";
+    for (const confirm of ["hooks.example.com", "collector.example.net"]) {
+      const r = await call(client, "oecsh_create_webhook", { url, events: ["deploy.completed"], confirm });
+      expect(text(r)).toContain("user name or password");
+    }
+    expect(api.calls).toHaveLength(0);
+  });
+
+  it("asks the user for the host, naming it, and goes ahead on a matching answer", async () => {
+    const api = mockApi({ "POST /webhooks": json(201, created) });
+    const asked: ElicitRequest["params"][] = [];
+    const client = await connect({ fetch: api.fetch, allow: "destructive" }, (p: ElicitRequest["params"]) => {
+      asked.push(p);
+      return { action: "accept", content: { confirm: "hooks.example.com" } };
+    });
+    const r = await call(client, "oecsh_create_webhook", {
+      url: "https://hooks.example.com/oec",
+      events: ["deploy.completed"],
+      confirm: "hooks.example.com",
+    });
+    expect(r.isError, text(r)).toBeFalsy();
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.message).toContain('"hooks.example.com"');
+    expect(asked[0]!.message).toContain("host of the webhook's URL");
+  });
+
+  it("update without a new url needs no confirm", async () => {
+    const api = mockApi({ [`PATCH /webhooks/${WH}`]: webhookRow });
+    const client = await connect({ fetch: api.fetch, allow: "destructive" });
+    const r = await call(client, "oecsh_update_webhook", { webhook_id: WH, events: ["deploy.failed"] });
+    expect(r.isError, text(r)).toBeFalsy();
+    expect(api.calls[0]!.body).toEqual({ events: ["deploy.failed"] });
+  });
+
+  it("update with a new url and no confirm says what is needed and changes nothing", async () => {
+    const api = mockApi({ [`PATCH /webhooks/${WH}`]: webhookRow });
+    const client = await connect({ fetch: api.fetch, allow: "destructive" });
+    const r = await call(client, "oecsh_update_webhook", { webhook_id: WH, url: "https://alerts.example.org/oec" });
+    expect(text(r)).toContain("Changing url needs confirm");
+    expect(text(r)).not.toContain("alerts.example.org");
+    expect(api.calls).toHaveLength(0);
+  });
+
+  it("confirm is never sent to the API", async () => {
+    const api = mockApi({ [`PATCH /webhooks/${WH}`]: webhookRow, "POST /webhooks": json(201, created) });
+    const client = await connect({ fetch: api.fetch, allow: "destructive" });
+    await call(client, "oecsh_update_webhook", { webhook_id: WH, url: "https://alerts.example.org/oec", confirm: "alerts.example.org" });
+    await call(client, "oecsh_create_webhook", { url: webhookRow.url, events: ["deploy.completed"], confirm: "hooks.example.com" });
+    for (const x of api.calls) expect(x.body).not.toHaveProperty("confirm");
+  });
+
+  it("test refuses a webhook whose stored URL has no host", async () => {
+    const api = mockApi({ [`GET /webhooks/${WH}`]: { ...webhookRow, url: null } });
+    const client = await connect({ fetch: api.fetch, allow: "destructive" });
+    const r = await call(client, "oecsh_test_webhook", { webhook_id: WH, confirm: "hooks.example.com" });
+    expect(text(r)).toContain("Nothing was changed");
+    expect(api.calls.map((x) => x.method)).toEqual(["GET"]);
+  });
+
+  it("refuses a URL that is not a web address", async () => {
+    const api = mockApi();
+    const client = await connect({ fetch: api.fetch, allow: "destructive" });
+    const r = await call(client, "oecsh_create_webhook", { url: "https://%zz", events: ["deploy.completed"], confirm: "%zz" });
+    expect(text(r)).toContain("not a valid web address");
+    expect(api.calls).toHaveLength(0);
+  });
+});
+
+// The model can read names back with the read tools, so the confirm argument
+// alone does not show that the user typed it. A client that can ask the user
+// (elicitation) gets a prompt the model cannot answer.
+describe("confirm through the client's own prompt (elicitation)", () => {
+  const routes = { [`GET /projects/${PRJ}`]: { id: PRJ, name: "acme" }, [`DELETE /projects/${PRJ}`]: null };
+  const args = { project_id: PRJ, confirm: "acme" };
+  const deleted = (api: ReturnType<typeof mockApi>) => api.calls.some((x) => x.method === "DELETE");
+
+  function asker(answer: ElicitResult) {
+    const asked: ElicitRequest["params"][] = [];
+    return { asked, elicit: (p: ElicitRequest["params"]) => (asked.push(p), answer) };
+  }
+
+  it("asks the user, naming the action and the resource, and goes ahead on a matching answer", async () => {
+    const api = mockApi(routes);
+    const user = asker({ action: "accept", content: { confirm: " acme " } });
+    const client = await connect({ fetch: api.fetch, allow: "destructive" }, user.elicit);
+    const r = await call(client, "oecsh_delete_project", args);
+    expect(r.isError, text(r)).toBeFalsy();
+    expect(user.asked).toHaveLength(1);
+    expect(user.asked[0]!.message).toContain("Delete project");
+    expect(user.asked[0]!.message).toContain('"acme"');
+    expect(user.asked[0]).toMatchObject({ mode: "form", requestedSchema: { required: ["confirm"] } });
+    expect(deleted(api)).toBe(true);
+  });
+
+  it.each([
+    ["declines", { action: "decline" }, "did not confirm"],
+    ["cancels", { action: "cancel" }, "did not confirm"],
+    ["types another name", { action: "accept", content: { confirm: "acme-prod" } }, "does not match"],
+    ["accepts without a value", { action: "accept", content: {} }, "did not confirm"],
+  ] as const)("changes nothing when the user %s", async (_label, answer, message) => {
+    const api = mockApi(routes);
+    const client = await connect({ fetch: api.fetch, allow: "destructive" }, asker(answer as ElicitResult).elicit);
+    const r = await call(client, "oecsh_delete_project", args);
+    expect(r.isError).toBe(true);
+    expect(text(r)).toContain(message);
+    expect(text(r)).toContain("Nothing was changed");
+    expect(text(r)).not.toContain("acme-prod");
+    expect(deleted(api)).toBe(false);
+  });
+
+  it("changes nothing when the prompt fails", async () => {
+    const api = mockApi(routes);
+    const client = await connect({ fetch: api.fetch, allow: "destructive" }, () => {
+      throw new Error("the client could not show the form");
+    });
+    const r = await call(client, "oecsh_delete_project", args);
+    expect(text(r)).toContain("did not confirm");
+    expect(deleted(api)).toBe(false);
+  });
+
+  it("does not ask the user when the confirm argument is already wrong", async () => {
+    const api = mockApi(routes);
+    const user = asker({ action: "accept", content: { confirm: "acme" } });
+    const client = await connect({ fetch: api.fetch, allow: "destructive" }, user.elicit);
+    const r = await call(client, "oecsh_delete_project", { ...args, confirm: "other" });
+    expect(text(r)).toContain("Nothing was changed");
+    expect(user.asked).toHaveLength(0);
+    expect(deleted(api)).toBe(false);
+  });
+
+  it.each(cases.map((c) => [c.tool, c] as const))("%s asks the user before it changes anything", async (_n, c) => {
+    const api = mockApi(c.lookup);
+    const user = asker({ action: "decline" });
+    const client = await connect({ fetch: api.fetch, allow: "destructive,backup-download" }, user.elicit);
+    const r = await call(client, c.tool, { ...c.args, [c.confirmArg ?? "confirm"]: c.realName });
+    expect(r.isError).toBe(true);
+    expect(user.asked).toHaveLength(1);
+    for (const x of api.calls) expect(x.method).toBe("GET");
+    expect(api.calls.some((x) => x.path.endsWith("/download"))).toBe(false);
+  });
+
+  it("without elicitation, the confirm argument alone decides, as before", async () => {
+    const api = mockApi(routes);
+    const client = await connect({ fetch: api.fetch, allow: "destructive" });
+    const r = await call(client, "oecsh_delete_project", args);
+    expect(r.isError, text(r)).toBeFalsy();
+    expect(deleted(api)).toBe(true);
   });
 });

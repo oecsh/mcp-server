@@ -179,9 +179,10 @@ export const deleteEnvironment = defineTool({
     .strict(),
   output: z.object({ task_id: z.string(), status: z.string(), environment_id: z.string(), next_step: z.string() }),
   annotations: destructive(true),
-  async run({ environment_id, confirm }, { client, signal }) {
+  async run({ environment_id, confirm }, ctx) {
+    const { client, signal } = ctx;
     const env = await client.get<Row>(apiPath`/environments/${environment_id}`, { signal });
-    checkConfirm(confirm, env.name as string | undefined, "environment's name");
+    await checkConfirm(confirm, env.name as string | undefined, "environment's name", "Delete environment", ctx);
     const res = await client.delete<Row | null>(apiPath`/environments/${environment_id}`, { confirmDelete: true, signal });
     if (!res || typeof res.task_id !== "string") {
       throw new OecshApiError("The API accepted the delete but returned no task id.", 502, "unexpected_response");

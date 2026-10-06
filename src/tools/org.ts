@@ -49,7 +49,8 @@ export const revokeApiKey = defineTool({
     .strict(),
   output: z.object({ revoked: z.boolean(), key_id: z.string() }),
   annotations: destructive(true),
-  async run({ key_id, confirm }, { client, signal }) {
+  async run({ key_id, confirm }, ctx) {
+    const { client, signal } = ctx;
     const keys = await client.get<ApiKeyRow[]>(apiPath`/org/api-keys`, { signal });
     const key = keys.find((k) => k.id.toLowerCase() === key_id.toLowerCase());
     if (!key) {
@@ -59,7 +60,7 @@ export const revokeApiKey = defineTool({
         "not_found",
       );
     }
-    checkConfirm(confirm, key.name, "API key's name");
+    await checkConfirm(confirm, key.name, "API key's name", "Revoke API key", ctx);
     await client.delete(apiPath`/org/api-keys/${key_id}`, { signal });
     return { data: { revoked: true, key_id }, summary: `API key ${key_id} is revoked.` };
   },

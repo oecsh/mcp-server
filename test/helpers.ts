@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { type CallToolResult, ElicitRequestSchema, type ElicitRequest, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Clock, FetchLike } from "../src/client.js";
 import { createServer, type ServerConfig } from "../src/server.js";
@@ -73,10 +73,18 @@ export function fakeClock(start = 1_700_000_000_000): Clock & { slept: number[] 
   };
 }
 
-export async function connect(cfg: Partial<ServerConfig> & { fetch: FetchLike }): Promise<Client> {
+/**
+ * A connected client. With `elicit`, the client declares form elicitation and
+ * answers the server's prompts with it, as a client that can ask the user does.
+ */
+export async function connect(
+  cfg: Partial<ServerConfig> & { fetch: FetchLike },
+  elicit?: (request: ElicitRequest["params"]) => ElicitResult | Promise<ElicitResult>,
+): Promise<Client> {
   const server = createServer({ apiKey: RW_KEY, apiBaseUrl: BASE, mode: "stdio", clock: fakeClock(), ...cfg });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "test", version: "1.0.0" });
+  const client = new Client({ name: "test", version: "1.0.0" }, elicit ? { capabilities: { elicitation: { form: {} } } } : {});
+  if (elicit) client.setRequestHandler(ElicitRequestSchema, (request) => elicit(request.params));
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return client;
 }

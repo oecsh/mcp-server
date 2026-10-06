@@ -130,22 +130,29 @@ Every tool name starts with `oecsh_`. List tools take `limit` (1 to 100, default
 | `oecsh_restart_environment`, `oecsh_start_environment`, `oecsh_stop_environment` | Restart, start, stop |
 | `oecsh_quick_update_environment` | Pull and restart, update all modules, or update some |
 | `oecsh_create_backup` | Starts a manual backup |
-| `oecsh_create_project`, `oecsh_update_project` | Projects (creating needs an organization-scoped key) |
+| `oecsh_create_project`, `oecsh_update_project` | Projects (creating needs an organization-scoped key). Changing a project's repository or git provider is an opt-in tool |
 | `oecsh_create_environment`, `oecsh_update_environment` | Environments |
-| `oecsh_create_webhook`, `oecsh_update_webhook`, `oecsh_test_webhook` | Webhooks |
 
 `oecsh_create_webhook` and `oecsh_rotate_webhook_secret` return the webhook's signing secret, because the API shows it only once. The secret is then in your conversation transcript, and the tool result says so: if the transcript is shared or stored where others can read it, rotate the secret in the dashboard (Settings > Webhooks) and give the new one to the receiver yourself. Rotating it through the assistant would put the new secret in the transcript too.
 
-Write tools that start work return a `task_id`; the assistant follows it with `oecsh_wait_for_task`. Deploy, restart, stop, quick update and the three update tools are marked destructive (they replace running code, take a site offline or overwrite settings), so clients that honour the hint ask before running them; the create tools, start and test webhook are not.
+Write tools that start work return a `task_id`; the assistant follows it with `oecsh_wait_for_task`. Deploy, restart, stop, quick update and the two update tools are marked destructive (they replace running code, take a site offline or overwrite settings), so clients that honour the hint ask before running them; the create tools and start are not.
 
 ### Opt-in tools
 
-Off unless you turn them on. Each is marked destructive, which is only a hint: most clients then ask for your approval, unless you have auto-approved the tool. Each also takes a `confirm` argument (`confirm_environment_name` for a restore) that must repeat the resource's name (for webhooks, the URL) exactly, and the server checks it against the real resource before doing anything. The assistant is told to ask you for that name, but it can also read names through the list tools, so the check cannot prove that you typed it. Keep these tools out of your client's auto-approve or allow list.
+Off unless you turn them on. Each is marked destructive, which is only a hint: most clients then ask for your approval, unless you have auto-approved the tool. Keep these tools out of your client's auto-approve or allow list.
+
+They also take a `confirm` argument (`confirm_environment_name` for a restore) that must repeat the resource's name exactly, and the server checks it against the real resource before doing anything. For deleting a webhook or rotating its secret, the name is the webhook's URL. For creating a webhook, testing one, or changing its URL, it is the host the data goes to (for `https://hooks.example.com/oec`, type `hooks.example.com`), as the server reads it from the URL: in `https://hooks.example.com@other.example/` that is `other.example`. Changing a webhook's other settings needs no `confirm`. The assistant is told to ask you for that name, but it can also read names through the list tools, so the argument alone cannot prove that you typed it. So when your client supports MCP elicitation (it can show you a form from the server), the server also asks **you** to type the name in your client's own prompt, which names the action and the resource, and goes ahead only if you accept and the name matches. Declining, or typing something else, changes nothing. Clients without elicitation, and the hosted server (which keeps no session, so it cannot ask), rely on the `confirm` argument alone.
 
 | Opt-in | Tools | Key |
 |--------|-------|-----|
-| `destructive` | `oecsh_delete_environment`, `oecsh_delete_project`, `oecsh_delete_webhook`, `oecsh_rotate_webhook_secret`, `oecsh_revoke_api_key`, `oecsh_reinitialize_modules`, `oecsh_restore_backup` | Full access (revoking keys and deleting projects: organization-scoped) |
-| `backup-download` | `oecsh_get_backup_download_links` (links to a full database dump, valid 5 to 60 minutes) | Any |
+| `destructive` | `oecsh_delete_environment`, `oecsh_delete_project`, `oecsh_delete_webhook`, `oecsh_rotate_webhook_secret`, `oecsh_revoke_api_key`, `oecsh_reinitialize_modules`, `oecsh_restore_backup`, `oecsh_update_project_repository`, `oecsh_create_webhook`, `oecsh_update_webhook`, `oecsh_test_webhook` | Full access (revoking keys and deleting projects: organization-scoped) |
+| `backup-download` | `oecsh_get_backup_download_links` (links to a full database dump, valid 5 minutes by default, at most 60) | Any |
+
+Creating, changing and testing webhooks are opt-in because a webhook sends oec.sh data to whatever HTTPS URL it names, and the test sends it at once: text that someone else wrote into a result (an Odoo log line, say) could ask the assistant to point one at their own address. Changing a project's repository or git provider (`oecsh_update_project_repository`) is opt-in for the same reason: every later deploy runs code from the new repository on your server, and the git provider decides which host your organization's git token is sent to. `oecsh_update_project` changes everything else about a project. Branch names (`branch`, `default_branch`) must be real branch names: ref paths such as `refs/...`, `pull/...` or `merge-requests/...`, bare commit ids and names starting with `-` are refused, so a deploy cannot pick up code from a fork's pull request.
+
+`oecsh_get_backup_download_links` answers with a warning: anyone holding a link can download the whole database until it expires, and the links are now in the conversation transcript.
+
+With a read-only key the server offers 19 tools (20 with `backup-download`). With a full-access key it offers 29, 40 with `destructive`, and 41 with both opt-ins.
 
 `oecsh_restore_backup` overwrites an environment's database and files with a completed backup of that same environment (a safety backup of the current data is taken first) and returns a task to follow. The name to type, for a restore or for download links, is the environment's current name; for a stopped or broken environment, which the API does not list, it is the name recorded with the backup (see `oecsh_get_backup`). Restoring into another environment stays in the dashboard.
 
@@ -154,7 +161,7 @@ Server registration tokens are not available through this server.
 ## Limits
 
 - Every API request counts against your key's [rate limit](https://doc.oec.sh/api-reference/rate-limits/): 120 reads and 20 writes a minute, counted separately.
-- Most tools make one or two API requests. `oecsh_get_backup_download_links` and `oecsh_restore_backup` make three, and each other confirmed destructive tool two (it reads the resource first to check the name).
+- Most tools make one or two API requests. `oecsh_get_backup_download_links` and `oecsh_restore_backup` make three, and each other confirmed destructive tool two (it reads the resource first to check the name), except creating a webhook or changing its URL, which check the host in the URL given and make one.
 - `oecsh_get_runtime_logs`, `oecsh_get_environment_metrics` and `oecsh_get_server_metrics` reach your server on every call, so the API allows 6 of each a minute per environment or server.
 - `oecsh_wait_for_task` polls the task every 5 seconds for the first 30 seconds, then every 10 seconds, and never spends more than a fifth of the read limit the API reports for your key (with a limit of 20 a minute, one poll every 15 seconds). Each call waits up to 50 seconds, since many clients give up on a tool call after 60 seconds, and up to 45 seconds in hosted mode; the assistant calls it again while the task runs. In local mode it waits up to 10 minutes when the client asks for progress notes (it then sends one after every poll) or the assistant passes a longer `timeout_seconds`.
 - When a limit is reached the tool says how long to wait, from the API's `Retry-After` (or, without it, until the next full minute). A wait of 10 seconds or less is retried once by itself, and `oecsh_wait_for_task` sits out a wait that fits in its time limit.
@@ -169,7 +176,12 @@ Server registration tokens are not available through this server.
 - The API address must use https (plain http only to `localhost`), and the server never follows a redirect, so the key cannot be sent in clear text or replayed to another address.
 - In hosted mode the API address is fixed by the server; a client cannot point your key at another host. Requests without a well-formed key are refused before the body is read, and a key the API has just refused is refused locally for 5 minutes. The API blocks an address for 15 minutes after 10 refused keys, so tool calls with keys the server has not yet seen working stop at 6 possible refusals until the API's count has run out; keys that worked recently are not held back. That count is kept per caller address when the server passes caller addresses to the API (`OECSH_MCP_PROXY_SECRET`), and once for the whole server when it does not, since the API then sees every hosted user at the server's one address. Only hashes of keys are kept in memory. Each request carries one JSON-RPC message (batches are refused).
 - Every id an assistant passes is checked to be a UUID before it goes into a request.
-- Names, notes, branch names and log text in results are your data. They are returned as data (a runtime log as one JSON string next to a notice saying so), and the server tells the assistant not to follow instructions found in them. Webhook delivery lists leave out the body your receiving URL answered with, since whoever runs that URL writes it.
+- Backups the assistant starts go only to your organization's own storage; the API refuses a storage location that belongs to another organization.
+- Names, notes, branch names and log text in results are your data. They are returned as data, and the server tells the assistant not to follow instructions found in them. Results that carry text others wrote (runtime and task logs, task error messages, deploy history, backup notes and snapshots) have a `notice` field before that text saying so, and those tools are marked open-world. Webhook delivery lists leave out the body your receiving URL answered with, since whoever runs that URL writes it.
+- In hosted mode at most 3 tool calls per key, and 10 per caller address, run at the same time; more get a "too many tool calls" error. Error messages there name "the oec.sh API" rather than the address the server uses, and leave out answers that are not the API's own JSON.
+- Never paste your API key into the chat. The assistant does not need it: the server reads it from its configuration, and anything typed into the chat stays in the transcript.
+- MCP client configuration files (`claude_desktop_config.json`, `~/.claude.json`, `mcp.json` and the like) store the key in plain text. Keep them out of version control, backups you share and screen shares.
+- With Claude Code, do not add the server with `--scope project`: that writes the key into `.mcp.json` in the project, which is meant to be committed. Use the default (local) or `--scope user`.
 - Destructive and sensitive tools are off by default. Prefer a read-only, project-scoped key, and give the assistant a full-access key only when it needs to change things.
 - Revoke a key at once if it leaks: **Settings > API Keys**.
 
@@ -177,8 +189,10 @@ Server registration tokens are not available through this server.
 
 ```bash
 docker build -t oecsh-mcp ./mcp-server
-docker run -p 8080:8080 -e OECSH_MCP_ALLOWED_HOSTS=localhost oecsh-mcp
+docker run -p 127.0.0.1:8080:8080 -e OECSH_MCP_ALLOWED_HOSTS=localhost oecsh-mcp
 ```
+
+The origin must be reachable only through your proxies (for `mcp.oec.sh`: Cloudflare, then Traefik). Publish the port on loopback, or only on the proxy's Docker network, and never on a public interface: the caller address the server passes to the API, and its per-address limits, rely on the proxy in front.
 
 In production set `OECSH_MCP_ALLOWED_HOSTS` to the public host name (for example `mcp.oec.sh`). On a bind other than loopback the server refuses to start without it, unless `OECSH_MCP_ALLOW_ANY_HOST=1` is set.
 
@@ -193,7 +207,8 @@ In production set `OECSH_MCP_ALLOWED_HOSTS` to the public host name (for example
 | `OECSH_MCP_ALLOW_ANY_HOST` | (off) | `1` accepts any Host header on a non-loopback bind (DNS rebinding protection then rests on the Origin check alone) |
 | `OECSH_MCP_ALLOWED_ORIGINS` | (none) | Browser origins to accept. Requests without an `Origin` header are not affected. |
 | `OECSH_MCP_PROXY_SECRET` | (none) | A secret of at least 32 printable ASCII characters, no spaces (for example `openssl rand -hex 32`), shared with the API. When set, every API request carries `X-OECSH-MCP-Proxy: <secret>` and `X-OECSH-Client-IP: <caller's address>`, and the API counts refused keys against the caller instead of this server. Sent only to `OECSH_API_URL`, never logged and never returned. Unset: neither header is sent. Set `PLATFORM_MCP_PROXY_SECRET` on the API to the identical value first: the API ignores the headers when its value is empty or different, and this server cannot tell, so all hosted users would again share one count. This works only against an API you configure; a self-hosted server pointed at `api.oec.sh` should leave it unset. |
-| `OECSH_MCP_CLIENT_IP_HEADER` | `cf-connecting-ip` | Request header that holds the caller's address, set by the proxy in front of this server. A value that is not one IPv4 or IPv6 address is ignored and the connection's own address is used. Name a header your proxy always overwrites, or a client can claim any address. |
+| `OECSH_MCP_CLIENT_IP_HEADER` | `cf-connecting-ip` | Request header that holds the caller's address, set by the proxy in front of this server. It is believed only when the hop in front of the local proxy (the last `X-Forwarded-For` entry, which Traefik appends; read only when the connection comes from a private address or a trusted proxy) is in Cloudflare's published ranges or in `OECSH_MCP_TRUSTED_PROXIES`. Otherwise, or when the value is not one IPv4 or IPv6 address, that hop is the caller's address. Addresses are passed on in one form (IPv6 compressed, IPv4-mapped IPv6 as IPv4). |
+| `OECSH_MCP_TRUSTED_PROXIES` | (none) | Extra proxies, comma separated addresses or CIDR ranges, whose client address header is believed and which may connect to the server directly. |
 
 Endpoints: `POST /mcp` (MCP, stateless, JSON responses) and `GET /healthz`. Put it behind a proxy that terminates TLS and limits connections per address.
 
@@ -211,4 +226,6 @@ The package does not depend on the rest of the oec.sh repository.
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE). Copyright (c) 2026 OpenEduCat Inc.
+MIT, see [LICENSE](LICENSE). Copyright (c) 2026 OpenEduCat Inc. To report a security problem, see [SECURITY.md](SECURITY.md).
+
+Odoo is a trademark of Odoo S.A. oec.sh is not affiliated with Odoo S.A.

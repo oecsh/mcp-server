@@ -20,14 +20,21 @@
   "types": "dist/server.d.ts",
   "files": [
     "dist",
+    "!dist/**/*.map",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SECURITY.md",
+    "npm-shrinkwrap.json"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "start": "node dist/stdio.js",
     "start:http": "node dist/http.js",
     "test": "tsc -p tsconfig.test.json && vitest run",

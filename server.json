@@ -1,0 +1,53 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "sh.oec/mcp-server",
+  "title": "oec.sh",
+  "description": "Operate your oec.sh Odoo servers, projects and environments with your own API key.",
+  "version": "0.1.0",
+  "websiteUrl": "https://doc.oec.sh/api-reference/mcp-server/",
+  "repository": {
+    "url": "https://github.com/oecsh/mcp-server",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@oecsh/mcp-server",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "OECSH_API_KEY",
+          "description": "Your oec.sh API key (oec_live_ro_... read only, or oec_live_rw_... full access), from Settings > API Keys.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "OECSH_ALLOW",
+          "description": "Opt-in tools, comma separated: destructive, backup-download. Empty by default.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.oec.sh/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer followed by your oec.sh API key, e.g. Bearer oec_live_ro_...",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

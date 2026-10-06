@@ -87,6 +87,11 @@ export interface ClientOptions {
   onKeyAccepted?: () => void;
   /** Hosted mode only: attributes each request to the end user's address. */
   hostedCaller?: HostedCaller;
+  /**
+   * Hosted mode: errors name "the oec.sh API" instead of its address (which
+   * may be an internal one) and leave out non-JSON answers (proxy pages).
+   */
+  hosted?: boolean;
 }
 
 // One automatic retry on 429, only when the API says the wait is short. A
@@ -102,6 +107,7 @@ export class OecshClient {
   readonly #onKeyRefused: (() => void) | undefined;
   readonly #onKeyAccepted: (() => void) | undefined;
   readonly #hostedCaller: HostedCaller | undefined;
+  readonly #hosted: boolean;
   #readRateLimit: number | undefined;
 
   constructor(opts: ClientOptions) {
@@ -113,6 +119,12 @@ export class OecshClient {
     this.#onKeyRefused = opts.onKeyRefused;
     this.#onKeyAccepted = opts.onKeyAccepted;
     this.#hostedCaller = opts.hostedCaller;
+    this.#hosted = opts.hosted ?? false;
+  }
+
+  /** Where errors say the API is: its host locally, where the user chose it; never in hosted mode. */
+  get #apiAt(): string {
+    return this.#hosted ? "" : ` at ${new URL(this.baseUrl).host}`;
   }
 
   /**
@@ -196,7 +208,7 @@ export class OecshClient {
       // points is exactly what must not happen.
       if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
         throw new OecshApiError(
-          `The oec.sh API at ${new URL(this.baseUrl).host} answered with a redirect, which it never does; the request was not followed. Check the API address.`,
+          `The oec.sh API${this.#apiAt} answered with a redirect, which it never does; the request was not followed. Check the API address.`,
           response.status,
           "unexpected_redirect",
         );
@@ -206,10 +218,24 @@ export class OecshClient {
         this.#onKeyAccepted?.();
         if (response.status === 204) return null as T;
         const text = await response.text();
-        return (text ? JSON.parse(text) : null) as T;
+        if (!text) return null as T;
+        try {
+          return JSON.parse(text) as T;
+        } catch {
+          // A 2xx page that is not JSON comes from a proxy, not the API. Its
+          // text is not the API's (and can name hosts behind this server), so
+          // hosted mode says nothing about it; locally the first line helps.
+          const detail = this.#hosted ? "" : ` (not JSON: ${text.split("\n")[0]?.slice(0, 200) ?? ""})`;
+          throw new OecshApiError(
+            `Got an unexpected answer from the oec.sh API${this.#apiAt}${detail}. If this call was meant to change ` +
+              "something, check whether it did before calling again.",
+            response.status,
+            "unexpected_answer",
+          );
+        }
       }
 
-      const body = await readBody(response);
+      const body = await readBody(response, this.#hosted);
       const error = normaliseError(response.status, body, response.headers, this.#clock.now(), path);
       if (response.status === 401 && (error.code === "invalid_key" || error.code === "key_expired")) {
         this.#onKeyRefused?.();
@@ -251,16 +277,15 @@ export class OecshClient {
     try {
       return await this.#fetch(url, { ...init, redirect: "manual", signal: combined });
     } catch (err) {
-      const host = new URL(this.baseUrl).host;
       if (timeout.aborted) {
         throw new OecshApiError(
-          `The oec.sh API at ${host} did not answer within ${Math.round(this.#timeoutMs / 1000)} seconds. Try again shortly.`,
+          `The oec.sh API${this.#apiAt} did not answer within ${Math.round(this.#timeoutMs / 1000)} seconds. Try again shortly.`,
           0,
           "timeout",
         );
       }
       if (signal?.aborted) throw err;
-      throw new OecshApiError(`Could not reach the oec.sh API at ${host}. Check the network and try again.`, 0, "network_error");
+      throw new OecshApiError(`Could not reach the oec.sh API${this.#apiAt}. Check the network and try again.`, 0, "network_error");
     }
   }
 }
@@ -269,14 +294,15 @@ function isLostAnswer(err: unknown): boolean {
   return err instanceof OecshApiError && (err.code === "timeout" || err.code === "network_error");
 }
 
-async function readBody(response: Response): Promise<unknown> {
+async function readBody(response: Response, hosted: boolean): Promise<unknown> {
   const text = await response.text().catch(() => "");
   if (!text) return null;
   try {
     return JSON.parse(text);
   } catch {
-    // A proxy error page is not worth showing; keep the first line only.
-    return text.split("\n")[0]?.slice(0, 200) ?? null;
+    // A proxy error page is not worth showing; keep the first line only, and
+    // in hosted mode nothing (it can name hosts behind this server).
+    return hosted ? null : (text.split("\n")[0]?.slice(0, 200) ?? null);
   }
 }
 

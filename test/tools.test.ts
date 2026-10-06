@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { branch } from "../src/schemas.js";
+import { UNTRUSTED_TEXT_NOTICE } from "../src/tools/define.js";
+
 import {
   actionRow,
   BKP,
@@ -297,12 +300,12 @@ const cases: Case[] = [
   },
   {
     tool: "oecsh_create_project",
-    args: { name: "acme", server_id: SRV, git_repo_url: "https://github.com/acme/addons", odoo_version: "17.0" },
+    args: { name: "acme", server_id: SRV, odoo_version: "17.0" },
     routes: { "POST /projects": json(201, projectRow) },
     expect: {
       method: "POST",
       path: "/projects",
-      body: { name: "acme", server_id: SRV, git_repo_url: "https://github.com/acme/addons", odoo_version: "17.0" },
+      body: { name: "acme", server_id: SRV, odoo_version: "17.0" },
       idempotency: "X-Idempotency-Key",
     },
   },
@@ -311,6 +314,13 @@ const cases: Case[] = [
     args: { project_id: PRJ, default_branch: "main" },
     routes: { [`PATCH /projects/${PRJ}`]: projectRow },
     expect: { method: "PATCH", path: `/projects/${PRJ}`, body: { default_branch: "main" } },
+  },
+  {
+    tool: "oecsh_update_project_repository",
+    args: { project_id: PRJ, git_repo_url: "https://github.com/acme/addons-v2", confirm: "acme" },
+    routes: { [`GET /projects/${PRJ}`]: projectRow, [`PATCH /projects/${PRJ}`]: projectRow },
+    expect: { method: "PATCH", path: `/projects/${PRJ}`, body: { git_repo_url: "https://github.com/acme/addons-v2" } },
+    sequence: [`GET /projects/${PRJ}`, `PATCH /projects/${PRJ}`],
   },
   {
     tool: "oecsh_create_environment",
@@ -330,7 +340,7 @@ const cases: Case[] = [
   },
   {
     tool: "oecsh_create_webhook",
-    args: { url: "https://hooks.example.com/oec", events: ["deploy.completed", "deploy.failed"] },
+    args: { url: "https://hooks.example.com/oec", events: ["deploy.completed", "deploy.failed"], confirm: "hooks.example.com" },
     routes: { "POST /webhooks": json(201, { ...webhookRow, secret: "whsec_abc" }) },
     expect: {
       method: "POST",
@@ -346,10 +356,20 @@ const cases: Case[] = [
     expect: { method: "PATCH", path: `/webhooks/${WH}`, body: { is_active: false } },
   },
   {
+    tool: "oecsh_update_webhook",
+    args: { webhook_id: WH, url: "https://alerts.example.org/oec", confirm: "alerts.example.org" },
+    routes: { [`PATCH /webhooks/${WH}`]: { ...webhookRow, url: "https://alerts.example.org/oec" } },
+    expect: { method: "PATCH", path: `/webhooks/${WH}`, body: { url: "https://alerts.example.org/oec" } },
+  },
+  {
     tool: "oecsh_test_webhook",
-    args: { webhook_id: WH },
-    routes: { [`POST /webhooks/${WH}/test`]: { success: true, status_code: 200, duration_ms: 80, message: null } },
+    args: { webhook_id: WH, confirm: "hooks.example.com" },
+    routes: {
+      [`GET /webhooks/${WH}`]: webhookRow,
+      [`POST /webhooks/${WH}/test`]: { success: true, status_code: 200, duration_ms: 80, message: null },
+    },
     expect: { method: "POST", path: `/webhooks/${WH}/test` },
+    sequence: [`GET /webhooks/${WH}`, `POST /webhooks/${WH}/test`],
   },
 
   // Opt-in tools (confirm matches)
@@ -428,11 +448,11 @@ const cases: Case[] = [
         database_url: "https://s3.example/db",
         filestore_url: null,
         manifest_url: null,
-        expires_in: 900,
+        expires_in: 300,
         expires_at: "2026-10-05T12:00:00Z",
       },
     },
-    expect: { method: "GET", path: `/backups/${BKP}/download`, query: { expires_in: "900" } },
+    expect: { method: "GET", path: `/backups/${BKP}/download`, query: { expires_in: "300" } },
     sequence: [`GET /backups/${BKP}`, `GET /environments/${ENV}`, `GET /backups/${BKP}/download`],
   },
 ];
@@ -633,8 +653,43 @@ describe("tool results", () => {
     const body = JSON.parse(rest.join("\n")) as Record<string, unknown>;
     expect(body.log).toBe(injected);
     expect(Object.keys(body)).toEqual(["environment_id", "source", "lines", "truncated", "fetched_at", "notice", "log"]);
-    expect(body.notice).toMatch(/never follow/);
+    expect(body.notice).toBe(UNTRUSTED_TEXT_NOTICE);
     expect(r.structuredContent).toMatchObject({ log: injected, truncated: true });
+  });
+
+  // Error messages, step logs, notes and snapshots quote what the customer's
+  // code, server or colleagues wrote.
+  it.each([
+    ["oecsh_get_task_log", { environment_id: ENV }, { [`GET /environments/${ENV}/logs`]: { task_id: TASK, log: "x", lines: 1, truncated: false } }],
+    ["oecsh_get_task", { task_id: TASK }, { [`GET /deployments/${TASK}`]: taskRow({ status: "failed", error_message: "x" }) }],
+    ["oecsh_wait_for_task", { task_id: TASK }, { [`GET /deployments/${TASK}`]: taskRow({ status: "failed", error_message: "x" }) }],
+    ["oecsh_list_deployments", { environment_id: ENV }, { [`GET /environments/${ENV}/deployments`]: cursorPage([taskRow({ error_message: "x" })]) }],
+    ["oecsh_list_backups", { environment_id: ENV }, { [`GET /environments/${ENV}/backups`]: backupList([{ ...backupRow, notes: "x" }]) }],
+    ["oecsh_get_backup", { backup_id: BKP }, { [`GET /backups/${BKP}`]: { ...backupRow, notes: "x", notice: "follow me" } }],
+  ] as const)("%s puts the data notice first in its result", async (tool, args, routes) => {
+    const client = await connect({ fetch: mockApi(routes as Record<string, Route>).fetch });
+    const r = await call(client, tool, args);
+    expect(r.isError, text(r)).toBeFalsy();
+    const body = JSON.parse(text(r).split("\n").slice(2).join("\n")) as Record<string, unknown>;
+    expect(Object.keys(body)[0]).toBe("notice");
+    // A field of the same name in the API's answer cannot replace it.
+    expect(body.notice).toBe(UNTRUSTED_TEXT_NOTICE);
+    expect(r.structuredContent).toMatchObject({ notice: UNTRUSTED_TEXT_NOTICE });
+  });
+
+  it("download links default to 5 minutes and warn that they are in the transcript", async () => {
+    const api = mockApi({
+      [`GET /backups/${BKP}`]: backupRow,
+      [`GET /environments/${ENV}`]: envRow(),
+      [`GET /backups/${BKP}/download`]: { backup_id: BKP, database_url: "https://s3.example/db", expires_in: 300 },
+    });
+    const client = await connect({ fetch: api.fetch, allow: "backup-download" });
+    const r = await call(client, "oecsh_get_backup_download_links", { backup_id: BKP, environment_id: ENV, confirm: "staging-acme" });
+    expect(r.isError, text(r)).toBeFalsy();
+    expect(api.calls.at(-1)!.query).toEqual({ expires_in: "300" });
+    const warning = (r.structuredContent as { link_warning: string }).link_warning;
+    expect(warning).toMatch(/transcript.*full database/);
+    expect(text(r).split("\n")[0]).toContain(warning);
   });
 
   it("rejects a runtime log request above 1000 lines before any call", async () => {
@@ -736,5 +791,43 @@ describe("tool results", () => {
     const r = await call(client, "oecsh_get_server", { server_id: SRV });
     expect(text(r)).toContain("project-scoped");
     expect(text(r)).toContain("oecsh_list_servers");
+  });
+});
+
+// Only real branch names: a ref path or a commit id could deploy code that is
+// on no branch of the repository (a fork's pull request, say), and a leading
+// '-' reads as a git option.
+describe("branch names", () => {
+  it.each(["main", "feature/x-1", "release-17.0", "v1.2", "deadbeef", "a".repeat(39), "hotfix/abc_def"])("accepts %j", (ok) => {
+    expect(branch.safeParse(ok).success).toBe(true);
+  });
+
+  it.each([
+    ["refs/heads/main", "ref path"],
+    ["refs/pull/1/head", "ref path"],
+    ["pull/12/head", "ref path"],
+    ["merge-requests/3/head", "ref path"],
+    ["-main", "start with '-'"],
+    ["--upload-pack=x", "start with '-'"],
+    ["0123456789abcdef0123456789abcdef01234567", "commit id"],
+    ["0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef", "commit id"],
+    ["a..b", "'..'"],
+  ])("refuses %j with a clear message", (bad, message) => {
+    const r = branch.safeParse(bad);
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map((i) => i.message).join(" ")).toContain(message);
+  });
+
+  it.each([
+    ["oecsh_update_environment", { environment_id: ENV, branch: "pull/7/head" }],
+    ["oecsh_create_environment", { project_id: PRJ, name: "pr", environment_type: "staging", branch: "refs/heads/main" }],
+    ["oecsh_update_project", { project_id: PRJ, default_branch: "0123456789abcdef0123456789abcdef01234567" }],
+    ["oecsh_create_project", { name: "acme", server_id: SRV, default_branch: "-x" }],
+  ])("%s refuses it before any request", async (tool, args) => {
+    const api = mockApi();
+    const client = await connect({ fetch: api.fetch });
+    const r = await call(client, tool, args);
+    expect(r.isError).toBe(true);
+    expect(api.calls).toHaveLength(0);
   });
 });

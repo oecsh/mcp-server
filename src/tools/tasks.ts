@@ -4,11 +4,15 @@ import { apiPath } from "../client.js";
 import { OecshApiError } from "../errors.js";
 import { type ApiCursorPage, decodeCursor, fromApiCursorPage, pageOutputShape, paginationInput } from "../pagination.js";
 import { id, task } from "../schemas.js";
-import { capLog, countLines, defineTool, MAX_LOG_CHARS, READ } from "./define.js";
+import { capLog, countLines, defineTool, MAX_LOG_CHARS, READ_UNTRUSTED, UNTRUSTED_TEXT_NOTICE, withNotice } from "./define.js";
 
 type Row = Record<string, unknown>;
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+
+// Error messages and step logs quote what the customer's code and server
+// printed, so every task result carries the notice before that text.
+const notice = z.string();
 
 // stdio runs on the user's machine and can wait as long as a deploy takes.
 // The hosted server answers well inside the proxy's timeout and lets the
@@ -41,8 +45,8 @@ export const listDeployments = defineTool({
     "A failed task with no started_at never ran (for example, another deployment was already running).",
   tier: "read",
   input: z.object({ environment_id: id("Environment id"), ...paginationInput }).strict(),
-  output: z.object(pageOutputShape(task)),
-  annotations: READ,
+  output: z.object({ notice, ...pageOutputShape(task) }),
+  annotations: READ_UNTRUSTED,
   async run({ environment_id, limit, cursor }, { client, signal }) {
     const tool = "oecsh_list_deployments";
     const res = await client.get<ApiCursorPage<Row>>(apiPath`/environments/${environment_id}/deployments`, {
@@ -50,7 +54,7 @@ export const listDeployments = defineTool({
       signal,
     });
     const out = fromApiCursorPage(res, tool, environment_id);
-    return { data: { ...out }, summary: `${out.count} of ${out.total} deployments of environment ${environment_id}.` };
+    return { data: { notice: UNTRUSTED_TEXT_NOTICE, ...out }, summary: `${out.count} of ${out.total} deployments of environment ${environment_id}.` };
   },
 });
 
@@ -62,11 +66,11 @@ export const getTask = defineTool({
     "every task type (deploy, restart, start, stop, backup, destroy).",
   tier: "read",
   input: z.object({ task_id: id("Task id") }).strict(),
-  output: task,
-  annotations: READ,
+  output: task.extend({ notice }),
+  annotations: READ_UNTRUSTED,
   async run({ task_id }, { client, signal }) {
     const t = await client.get<Row>(apiPath`/deployments/${task_id}`, { signal });
-    return { data: t, summary: `Task ${task_id} is ${String(t.status)}.` };
+    return { data: withNotice(t), summary: `Task ${task_id} is ${String(t.status)}.` };
   },
 });
 
@@ -94,13 +98,14 @@ export const waitForTask = defineTool({
     })
     .strict(),
   output: z.object({
+    notice,
     task,
     finished: z.boolean(),
     timed_out: z.boolean(),
     waited_seconds: z.number(),
     next_step: z.string(),
   }),
-  annotations: READ,
+  annotations: READ_UNTRUSTED,
   async run({ task_id, timeout_seconds }, { client, mode, tier, clock, signal, progress }) {
     const limit = WAIT_LIMIT_SECONDS[mode];
     const wanted = timeout_seconds ?? (progress ? limit : DEFAULT_WAIT_SECONDS);
@@ -134,7 +139,7 @@ export const waitForTask = defineTool({
               ? `The task failed; see error_message.${envId ? ` Read its log with oecsh_get_task_log environment_id ${envId} task_id ${task_id}.` : ""}`
               : "The task was cancelled.";
         return {
-          data: { task: t, finished: true, timed_out: false, waited_seconds: waited, next_step: next },
+          data: { notice: UNTRUSTED_TEXT_NOTICE, task: t, finished: true, timed_out: false, waited_seconds: waited, next_step: next },
           summary: `Task ${task_id} ${status} after ${waited} s of waiting.`,
         };
       }
@@ -155,6 +160,7 @@ export const waitForTask = defineTool({
         const total = Math.round((clock.now() - start) / 1000);
         return {
           data: {
+            notice: UNTRUSTED_TEXT_NOTICE,
             task: t,
             finished: false,
             timed_out: true,
@@ -184,12 +190,13 @@ export const getTaskLog = defineTool({
     })
     .strict(),
   output: z.object({
+    notice,
     task_id: z.string().nullable(),
     log: z.string(),
     lines: z.number(),
     truncated: z.boolean(),
   }),
-  annotations: READ,
+  annotations: READ_UNTRUSTED,
   async run({ environment_id, task_id, lines }, { client, signal }) {
     const res = await client.get<{ task_id: string | null; log: string; lines: number; truncated: boolean }>(
       apiPath`/environments/${environment_id}/logs`,
@@ -198,7 +205,7 @@ export const getTaskLog = defineTool({
     const { log, cut } = capLog(res.log ?? "");
     const count = cut ? countLines(log) : res.lines;
     return {
-      data: { task_id: res.task_id, log, lines: count, truncated: res.truncated || cut },
+      data: { notice: UNTRUSTED_TEXT_NOTICE, task_id: res.task_id, log, lines: count, truncated: res.truncated || cut },
       summary: res.task_id
         ? `${count} log lines of task ${res.task_id}${
             cut ? ` (cut to the newest ${MAX_LOG_CHARS} characters; ask for fewer lines)` : res.truncated ? " (older lines cut)" : ""

@@ -5,7 +5,7 @@
 // only, so a client cannot point the key at another host.
 import { createHash } from "node:crypto";
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { pathToFileURL } from "node:url";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -34,6 +34,11 @@ export interface HttpConfig {
   proxySecret?: string;
   /** Request header holding the end user's address, set by the proxy in front (default cf-connecting-ip). */
   clientIpHeader?: string;
+  /**
+   * Proxies besides Cloudflare's edge whose client address header is believed
+   * (OECSH_MCP_TRUSTED_PROXIES), and that may connect to this server directly.
+   */
+  trustedProxies?: BlockList;
   fetch?: FetchLike;
   clock?: Clock;
   log?: (line: string) => void;
@@ -43,6 +48,35 @@ const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 // The hosted server sits behind Cloudflare and Traefik; Cloudflare puts the
 // visitor's address in this header and overwrites any value a client sent.
 const DEFAULT_CLIENT_IP_HEADER = "cf-connecting-ip";
+// Cloudflare's edge ranges (https://www.cloudflare.com/ips/), the same list
+// the API trusts for this header.
+const CLOUDFLARE_NETWORKS = [
+  "173.245.48.0/20",
+  "103.21.244.0/22",
+  "103.22.200.0/22",
+  "103.31.4.0/22",
+  "141.101.64.0/18",
+  "108.162.192.0/18",
+  "190.93.240.0/20",
+  "188.114.96.0/20",
+  "197.234.240.0/22",
+  "198.41.128.0/17",
+  "162.158.0.0/15",
+  "104.16.0.0/13",
+  "104.24.0.0/14",
+  "172.64.0.0/13",
+  "2400:cb00::/32",
+  "2606:4700::/32",
+  "2803:f800::/32",
+  "2405:b500::/32",
+  "2405:8100::/32",
+  "2a06:98c0::/29",
+  "2c0f:f248::/32",
+];
+// Where a reverse proxy in front of this server (Traefik in Docker) connects
+// from. Only such a connection can carry an X-Forwarded-For this server
+// believes: a caller who reaches the port directly comes from outside them.
+const LOCAL_NETWORKS = ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7"];
 // Long enough that it cannot be guessed, and that scrubbing it from output
 // cannot mangle ordinary text.
 const MIN_PROXY_SECRET_LENGTH = 32;
@@ -93,7 +127,63 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): HttpConfig
     allowedOrigins: list(env.OECSH_MCP_ALLOWED_ORIGINS),
     proxySecret,
     clientIpHeader: env.OECSH_MCP_CLIENT_IP_HEADER?.trim().toLowerCase() || DEFAULT_CLIENT_IP_HEADER,
+    trustedProxies: env.OECSH_MCP_TRUSTED_PROXIES?.trim()
+      ? parseNetworks(list(env.OECSH_MCP_TRUSTED_PROXIES), "OECSH_MCP_TRUSTED_PROXIES")
+      : undefined,
   };
+}
+
+/**
+ * One spelling per address, so the same caller always lands in the same
+ * budget and the API sees the form it counts: IPv4 dotted, IPv6 lower case
+ * and compressed, no zone id, an IPv4-mapped IPv6 address as plain IPv4.
+ * Undefined when the text is not one IP address.
+ */
+export function canonicalIp(raw: string): string | undefined {
+  let s = raw.trim();
+  if (s.startsWith("[") && s.endsWith("]")) s = s.slice(1, -1);
+  const zone = s.indexOf("%");
+  if (zone >= 0) s = s.slice(0, zone);
+  const family = isIP(s);
+  if (family === 4) return s;
+  if (family !== 6) return undefined;
+  let host: string;
+  try {
+    // The URL parser writes IPv6 in the canonical (RFC 5952) form.
+    host = new URL(`http://[${s}]/`).hostname.slice(1, -1);
+  } catch {
+    return undefined;
+  }
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(host);
+  if (!mapped) return host;
+  const hi = parseInt(mapped[1]!, 16);
+  const lo = parseInt(mapped[2]!, 16);
+  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+}
+
+/** Addresses and CIDR ranges ("10.0.0.0/8", "2001:db8::1") as a BlockList; throws on anything else. */
+export function parseNetworks(items: readonly string[], what: string): BlockList {
+  const networks = new BlockList();
+  for (const item of items) {
+    const [addr = "", prefix, extra] = item.split("/");
+    const ip = canonicalIp(addr);
+    const family = ip ? isIP(ip) : 0;
+    const max = family === 4 ? 32 : 128;
+    const bits = prefix === undefined ? max : /^\d{1,3}$/.test(prefix) ? Number(prefix) : NaN;
+    if (!ip || extra !== undefined || !(bits >= 0 && bits <= max)) {
+      throw new Error(`${what}: "${item.slice(0, 60)}" is not an IP address or CIDR range.`);
+    }
+    networks.addSubnet(ip, bits, family === 4 ? "ipv4" : "ipv6");
+  }
+  return networks;
+}
+
+const CLOUDFLARE = parseNetworks(CLOUDFLARE_NETWORKS, "Cloudflare ranges");
+const LOCAL = parseNetworks(LOCAL_NETWORKS, "local ranges");
+
+/** Whether a canonical address is in the list. */
+function inNetworks(networks: BlockList | undefined, ip: string): boolean {
+  return networks?.check(ip, isIP(ip) === 4 ? "ipv4" : "ipv6") ?? false;
 }
 
 export function isLoopback(host: string): boolean {
@@ -134,18 +224,28 @@ export function checkHostAndOrigin(req: IncomingMessage, cfg: HttpConfig): strin
 }
 
 /**
- * The end user's address: the configured header if it holds one IP address,
- * else the connection's own address. Undefined only if neither is known.
+ * The end user's address, in canonical form, by the API's own rule. Anyone
+ * who reaches this server can write any header, so the hop in front of it
+ * decides: the last X-Forwarded-For entry (the peer the local proxy saw,
+ * appended by Traefik) when the connection comes from a local or trusted
+ * proxy, else the connection's own address. The configured client address
+ * header counts only when that hop is Cloudflare's edge or a trusted proxy;
+ * otherwise the hop itself is the caller. Undefined when the connection's
+ * address is unknown.
  */
 export function clientAddress(req: IncomingMessage, cfg: HttpConfig): string | undefined {
+  const socket = canonicalIp(req.socket.remoteAddress ?? "");
+  if (!socket) return undefined;
+  let hop = socket;
+  if (inNetworks(LOCAL, socket) || inNetworks(cfg.trustedProxies, socket)) {
+    const forwarded = req.headers["x-forwarded-for"];
+    const hops = (Array.isArray(forwarded) ? forwarded.join(",") : (forwarded ?? "")).split(",");
+    const last = hops.map((h) => h.trim()).filter(Boolean).at(-1);
+    hop = (last && canonicalIp(last)) || socket;
+  }
+  if (!inNetworks(CLOUDFLARE, hop) && !inNetworks(cfg.trustedProxies, hop)) return hop;
   const raw = req.headers[cfg.clientIpHeader || DEFAULT_CLIENT_IP_HEADER];
-  const fromHeader = (Array.isArray(raw) ? raw[0] : raw)?.trim();
-  if (fromHeader && isIP(fromHeader)) return fromHeader;
-  const socket = req.socket.remoteAddress;
-  if (!socket || !isIP(socket)) return undefined;
-  // An IPv4 client on a dual-stack socket shows as ::ffff:a.b.c.d; the API
-  // sees direct IPv4 clients as a.b.c.d, so count them under the same name.
-  return socket.startsWith("::ffff:") && isIP(socket.slice(7)) === 4 ? socket.slice(7) : socket;
+  return canonicalIp((Array.isArray(raw) ? raw[0] : raw) ?? "") ?? hop;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
@@ -208,6 +308,13 @@ const CALLER_PAUSE_MESSAGE =
   "not yet seen working are paused for a moment (this keeps the API from blocking your address for 15 minutes).";
 // Budget bucket for the whole server, when the API cannot tell users apart.
 const SHARED_BUCKET = "";
+// A key the API accepted is not held to the budget, so a key revoked a moment
+// ago could still fire many calls at once and get as many refusals counted
+// against the caller's address. Tool calls running at the same time are
+// capped per key, and per caller address when the API sees one (not for the
+// shared bucket: that would cap every user of the server together).
+const MAX_IN_FLIGHT_PER_KEY = 3;
+const MAX_IN_FLIGHT_PER_CALLER = 10;
 
 function bearer(header: string | undefined): string | null {
   if (!header) return null;
@@ -248,6 +355,14 @@ export function createHttpHandler(cfg: HttpConfig): (req: IncomingMessage, res: 
     if (budgets.size >= KEY_CACHE_MAX) budgets.delete(budgets.keys().next().value as string);
     budgets.set(bucket, budget);
     return budget;
+  };
+  // sha256 of the key, or caller address -> tool calls running now.
+  const inFlightByKey = new Map<string, number>();
+  const inFlightByCaller = new Map<string, number>();
+  const release = (map: Map<string, number>, k: string): void => {
+    const n = (map.get(k) ?? 1) - 1;
+    if (n > 0) map.set(k, n);
+    else map.delete(k);
   };
   const startNewWindowIfDue = (budget: Budget): void => {
     if (now() - budget.touchedAt >= BUDGET_WINDOW_MS) {
@@ -325,9 +440,32 @@ export function createHttpHandler(cfg: HttpConfig): (req: IncomingMessage, res: 
       const hostedCaller = cfg.proxySecret && clientIp ? { proxySecret: cfg.proxySecret, clientIp } : undefined;
       const bucket = hostedCaller ? hostedCaller.clientIp : SHARED_BUCKET;
 
+      if (isToolCall(body)) {
+        const byKey = inFlightByKey.get(keyHash) ?? 0;
+        const byCaller = bucket === SHARED_BUCKET ? 0 : (inFlightByCaller.get(bucket) ?? 0);
+        if (byKey >= MAX_IN_FLIGHT_PER_KEY || byCaller >= MAX_IN_FLIGHT_PER_CALLER) {
+          const who =
+            byKey >= MAX_IN_FLIGHT_PER_KEY
+              ? `with this API key (at most ${MAX_IN_FLIGHT_PER_KEY})`
+              : `from your address (at most ${MAX_IN_FLIGHT_PER_CALLER})`;
+          return rpcError(res, 429, -32000, `Too many tool calls running at once ${who}. Wait for one to finish, then try again.`, {
+            "Retry-After": "1",
+          });
+        }
+        inFlightByKey.set(keyHash, byKey + 1);
+        if (bucket !== SHARED_BUCKET) inFlightByCaller.set(bucket, byCaller + 1);
+        res.on("close", () => {
+          release(inFlightByKey, keyHash);
+          if (bucket !== SHARED_BUCKET) release(inFlightByCaller, bucket);
+        });
+      }
+
       let charged = 0;
       let chargedWindow = 0;
       let chargedBudget: Budget | undefined;
+      // Whether this request reached the API at all; one that did not (bad
+      // arguments, an unknown tool) cannot have caused a refusal.
+      let apiRequested = false;
       const known = (acceptedKeys.get(keyHash) ?? 0) > now();
       if (!known && isToolCall(body)) {
         const budget = budgetFor(bucket);
@@ -346,12 +484,20 @@ export function createHttpHandler(cfg: HttpConfig): (req: IncomingMessage, res: 
         budget.touchedAt = now();
         // The outcome of a call that ended without the key being accepted is
         // not known (the API may still be answering it): keep its charge and
-        // restart the window from now.
+        // restart the window from now. A call that never reached the API gets
+        // its charge back.
         res.on("close", () => {
-          if (charged > 0 && chargedWindow === budget.window) budget.touchedAt = Math.max(budget.touchedAt, now());
+          if (charged === 0 || chargedWindow !== budget.window) return;
+          if (!apiRequested) {
+            budget.used = Math.max(0, budget.used - charged);
+            charged = 0;
+            return;
+          }
+          budget.touchedAt = Math.max(budget.touchedAt, now());
         });
       }
 
+      const apiFetch: FetchLike = cfg.fetch ?? ((input, init) => fetch(input, init));
       let server;
       try {
         server = createServer({
@@ -359,7 +505,10 @@ export function createHttpHandler(cfg: HttpConfig): (req: IncomingMessage, res: 
           apiBaseUrl: cfg.apiBaseUrl,
           allow: req.headers["x-oecsh-allow"]?.toString(),
           mode: "http",
-          fetch: cfg.fetch,
+          fetch: (input, init) => {
+            apiRequested = true;
+            return apiFetch(input, init);
+          },
           clock: cfg.clock,
           allowPlainHttp: cfg.allowPlainHttp,
           hostedCaller,

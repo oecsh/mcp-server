@@ -107,7 +107,7 @@ describe("webhook signing secrets", () => {
       [`POST /webhooks/${WH}/rotate-secret`]: { secret: "whsec_new" },
     });
     const client = await connect({ fetch: api.fetch, allow: "destructive" });
-    const created = await call(client, "oecsh_create_webhook", { url: webhookRow.url, events: ["deploy.completed"] });
+    const created = await call(client, "oecsh_create_webhook", { url: webhookRow.url, events: ["deploy.completed"], confirm: "hooks.example.com" });
     const rotated = await call(client, "oecsh_rotate_webhook_secret", { webhook_id: WH, confirm: webhookRow.url });
     for (const [r, secret] of [[created, "whsec_abc"], [rotated, "whsec_new"]] as const) {
       expect(r.isError).toBeFalsy();
@@ -127,8 +127,8 @@ describe("webhook signing secrets", () => {
 
   it("no warning when the API returns no secret", async () => {
     const api = mockApi({ "POST /webhooks": json(201, { ...webhookRow, secret: null }) });
-    const client = await connect({ fetch: api.fetch });
-    const r = await call(client, "oecsh_create_webhook", { url: webhookRow.url, events: ["deploy.completed"] });
+    const client = await connect({ fetch: api.fetch, allow: "destructive" });
+    const r = await call(client, "oecsh_create_webhook", { url: webhookRow.url, events: ["deploy.completed"], confirm: "hooks.example.com" });
     expect(r.structuredContent).not.toHaveProperty("secret_warning");
   });
 });
