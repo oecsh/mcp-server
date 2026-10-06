@@ -3,7 +3,7 @@
   "name": "sh.oec/mcp-server",
   "title": "oec.sh",
   "description": "Operate your oec.sh Odoo servers, projects and environments with your own API key.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "websiteUrl": "https://doc.oec.sh/api-reference/mcp-server/",
   "repository": {
     "url": "https://github.com/oecsh/mcp-server",
@@ -28,7 +28,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@oecsh/mcp-server",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "transport": {
         "type": "stdio"
       },
