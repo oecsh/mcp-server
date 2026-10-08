@@ -1,6 +1,6 @@
 {
   "name": "@oecsh/mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server for oec.sh: operate your Odoo servers, projects and environments from an AI assistant with your own API key",
   "license": "MIT",
   "homepage": "https://doc.oec.sh/api-reference/mcp-server/",

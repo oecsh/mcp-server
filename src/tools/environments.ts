@@ -11,7 +11,7 @@ type Row = Record<string, unknown>;
 const domain = z
   .string()
   .max(253)
-  .regex(/^(\*\.)?([a-z0-9-]+\.)+[a-z0-9-]+$/i, "use a host name such as erp.example.com")
+  .regex(/^(\*\.)?([a-z0-9\-]+\.)+[a-z0-9\-]+$/i, "use a host name such as erp.example.com")
   .describe("Custom domain, e.g. erp.example.com. The DNS record at the domain's provider stays the user's job.");
 
 const resources = {

@@ -192,7 +192,11 @@ export const branch = z
   .string()
   .min(1)
   .max(255)
-  .regex(/^[^\s~^:?*[\\\x00-\x1f\x7f]+$/, "branch name contains characters git does not allow")
+  // Kept portable: this pattern goes into the tool's JSON schema, and the Claude API
+  // rejected the old one (unescaped [ in the class, \x escapes). Control
+  // characters are refused by the refine below instead.
+  .regex(/^[^\s~^:?*\[\\]+$/, "branch name contains characters git does not allow")
+  .refine((v) => !/[\x00-\x1f\x7f]/.test(v), "branch name contains characters git does not allow")
   .refine((v) => !v.includes("..") && !v.startsWith("/"), "branch name cannot contain '..' or start with '/'")
   .refine((v) => !v.startsWith("-"), "branch name cannot start with '-'")
   .refine(
