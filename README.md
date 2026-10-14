@@ -121,6 +121,8 @@ Every tool name starts with `oecsh_`. List tools take `limit` (1 to 100, default
 | `oecsh_get_task_log` | A task's step log and error |
 | `oecsh_list_backups`, `oecsh_get_backup` | An environment's backups; one backup |
 | `oecsh_list_webhooks`, `oecsh_get_webhook`, `oecsh_list_webhook_deliveries` | Outgoing webhooks and their recent deliveries |
+| `oecsh_list_changelog` | oec.sh release notes, newest first; optionally only those after a version (`since_version`) or since a date (`since_date`) |
+| `oecsh_list_support_tickets`, `oecsh_get_support_ticket` | The organization's support tickets; one ticket with its public replies (never internal notes). Needs an organization-scoped key with Support tickets turned on (Settings > API Keys) |
 
 ### Write tools (full-access key; none of them deletes data)
 

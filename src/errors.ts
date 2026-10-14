@@ -185,6 +185,14 @@ export function normaliseError(
         code,
       );
     }
+    if (code === "support_tickets_not_enabled") {
+      return new OecshApiError(
+        "This API key may not read support tickets. An organization admin can turn on Support tickets " +
+          `for this key under ${KEYS_HINT} (organization-scoped keys only). ${tag}`,
+        status,
+        code,
+      );
+    }
     if (code === "project_scoped_key" || code === "org_scope_required") {
       return new OecshApiError(
         `This action needs an organization-scoped API key; the configured key is limited to one project.${apiText} ${tag}`,

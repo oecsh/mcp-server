@@ -13,14 +13,17 @@ const READ_TOOLS = [
   "oecsh_get_runtime_logs",
   "oecsh_get_server",
   "oecsh_get_server_metrics",
+  "oecsh_get_support_ticket",
   "oecsh_get_task",
   "oecsh_get_task_log",
   "oecsh_get_webhook",
   "oecsh_list_backups",
+  "oecsh_list_changelog",
   "oecsh_list_deployments",
   "oecsh_list_environments",
   "oecsh_list_projects",
   "oecsh_list_servers",
+  "oecsh_list_support_tickets",
   "oecsh_list_webhook_deliveries",
   "oecsh_list_webhooks",
   "oecsh_wait_for_task",
@@ -65,10 +68,12 @@ const REPLACING_TOOLS = [
 const UNTRUSTED_TEXT_TOOLS = [
   "oecsh_get_backup",
   "oecsh_get_runtime_logs",
+  "oecsh_get_support_ticket",
   "oecsh_get_task",
   "oecsh_get_task_log",
   "oecsh_list_backups",
   "oecsh_list_deployments",
+  "oecsh_list_support_tickets",
   "oecsh_wait_for_task",
 ];
 
@@ -103,13 +108,13 @@ describe("tools registered by tier and opt-in", () => {
   it("read-only key: read tools only", async () => {
     const client = await connect({ apiKey: RO_KEY, fetch: mockApi().fetch });
     expect(await toolNames(client)).toEqual(sorted(READ_TOOLS));
-    expect(READ_TOOLS).toHaveLength(19);
+    expect(READ_TOOLS).toHaveLength(22);
   });
 
   it("full-access key: read and write tools, no opt-ins", async () => {
     const client = await connect({ apiKey: RW_KEY, fetch: mockApi().fetch });
     expect(await toolNames(client)).toEqual(sorted(READ_TOOLS, WRITE_TOOLS));
-    expect(await toolNames(client)).toHaveLength(29);
+    expect(await toolNames(client)).toHaveLength(32);
   });
 
   it("without the destructive opt-in, nothing can create, change or fire a webhook or change a project's repository", async () => {
@@ -151,7 +156,7 @@ describe("tools registered by tier and opt-in", () => {
   it("destructive opt-in adds the destructive tools", async () => {
     const client = await connect({ apiKey: RW_KEY, fetch: mockApi().fetch, allow: "destructive" });
     expect(await toolNames(client)).toEqual(sorted(READ_TOOLS, WRITE_TOOLS, DESTRUCTIVE_TOOLS, WEBHOOK_SEND_TOOLS));
-    expect(await toolNames(client)).toHaveLength(40);
+    expect(await toolNames(client)).toHaveLength(43);
   });
 
   it("backup-download opt-in adds the download tool, also for a read-only key", async () => {

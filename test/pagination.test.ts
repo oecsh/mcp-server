@@ -141,7 +141,7 @@ describe("list tools share one pagination shape", () => {
   it("every list tool has the same input and output shape", async () => {
     const client = await connect({ fetch: mockApi().fetch, allow: "destructive,backup-download" });
     const lists = (await client.listTools()).tools.filter((t) => t.name.startsWith("oecsh_list_"));
-    expect(lists.length).toBe(7);
+    expect(lists.length).toBe(9);
     for (const t of lists) {
       const props = t.inputSchema.properties as Record<string, { default?: number; maximum?: number }>;
       expect(props.limit).toMatchObject({ default: 20, maximum: 100 });
@@ -150,7 +150,7 @@ describe("list tools share one pagination shape", () => {
       // Lists whose items carry text others wrote (error messages, notes) also have the notice.
       const page = Object.keys(out).filter((k) => k !== "notice").sort();
       expect(page).toEqual(["count", "has_more", "items", "next_cursor", "total"]);
-      expect("notice" in out).toBe(["oecsh_list_deployments", "oecsh_list_backups"].includes(t.name));
+      expect("notice" in out).toBe(["oecsh_list_deployments", "oecsh_list_backups", "oecsh_list_support_tickets"].includes(t.name));
     }
   });
 });

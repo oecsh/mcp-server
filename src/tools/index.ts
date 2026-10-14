@@ -7,12 +7,14 @@ import {
   stopEnvironment,
 } from "./actions.js";
 import { createBackup, getBackup, getBackupDownloadLinks, listBackups, restoreBackup } from "./backups.js";
+import { listChangelog } from "./changelog.js";
 import type { ToolDef } from "./define.js";
 import { createEnvironment, deleteEnvironment, getEnvironment, listEnvironments, updateEnvironment } from "./environments.js";
 import { getEnvironmentMetrics, getRuntimeLogs, getServerMetrics } from "./observability.js";
 import { getOrganization, revokeApiKey } from "./org.js";
 import { createProject, deleteProject, getProject, listProjects, updateProject, updateProjectRepository } from "./projects.js";
 import { getServer, listServers } from "./servers.js";
+import { getSupportTicket, listSupportTickets } from "./support.js";
 import { getTask, getTaskLog, listDeployments, waitForTask } from "./tasks.js";
 import {
   createWebhook,
@@ -51,6 +53,11 @@ export const ALL_TOOLS: readonly ToolDef[] = [
   listWebhooks,
   getWebhook,
   listWebhookDeliveries,
+  listChangelog,
+  // Any tier, but only an org-scoped key with the dashboard's Support
+  // tickets switch on; the API refuses every other key.
+  listSupportTickets,
+  getSupportTicket,
 
   // Write: full-access key; none of these deletes data.
   deployEnvironment,

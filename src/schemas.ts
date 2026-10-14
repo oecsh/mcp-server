@@ -147,6 +147,39 @@ export const delivery = z.looseObject({
   created_at: s(),
 });
 
+export const changelogEntry = z.looseObject({
+  version: z.string(),
+  date: s(),
+  title: s(),
+  highlights: z.array(z.string()).nullable().optional(),
+  categories: z.record(z.string(), z.array(z.string())).nullable().optional(),
+});
+
+export const supportTicket = z.looseObject({
+  id: z.string(),
+  ticket_number: s(),
+  subject: s(),
+  status: s(),
+  priority: s(),
+  category: s(),
+  source: s(),
+  project_id: s(),
+  environment_id: s(),
+  server_id: s(),
+  created_at: s(),
+  updated_at: s(),
+  resolved_at: s(),
+  closed_at: s(),
+});
+
+export const supportTicketComment = z.looseObject({
+  id: z.string(),
+  author_name: s(),
+  from_support: b(),
+  content: s(),
+  created_at: s(),
+});
+
 export const actionResult = {
   task_id: z.string(),
   status: z.string(),
@@ -160,6 +193,14 @@ export const ENVIRONMENT_STATUSES = ["pending", "cloning", "deploying", "running
 export const BACKUP_STATUSES = ["pending", "in_progress", "uploading", "completed", "failed", "cancelled", "expired"] as const;
 export const BACKUP_TYPES = ["manual", "scheduled", "pre_restore", "pre_upgrade", "pre_destroy"] as const;
 export const RETENTION_TYPES = ["daily", "weekly", "monthly", "yearly", "permanent"] as const;
+export const TICKET_STATUSES = [
+  "open",
+  "in_progress",
+  "waiting_for_customer",
+  "waiting_for_admin",
+  "resolved",
+  "closed",
+] as const;
 export const WEBHOOK_EVENTS = [
   "deploy.started",
   "deploy.completed",
