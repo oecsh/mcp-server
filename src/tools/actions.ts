@@ -109,7 +109,8 @@ export const quickUpdateEnvironment = defineTool({
   description:
     "Pulls the latest code into a running environment and restarts it, optionally updating all or some " +
     "modules (faster than a full deploy, no rebuild). Modes: pull_restart, update_all, update_specific " +
-    "(needs modules). Returns a task to follow with oecsh_wait_for_task.",
+    "(needs modules). Module updates first save a copy of the database on the server as a restore point; " +
+    "skip_safety_copy leaves it out. Returns a task to follow with oecsh_wait_for_task.",
   tier: "write",
   input: z
     .object({
@@ -118,18 +119,32 @@ export const quickUpdateEnvironment = defineTool({
         .enum(["pull_restart", "update_all", "update_specific"])
         .describe("pull_restart: pull and restart. update_all: also update every module. update_specific: update the listed modules."),
       modules: modules.optional().describe("Modules to update; required for update_specific."),
+      skip_safety_copy: z
+        .boolean()
+        .optional()
+        .describe(
+          "update_all / update_specific only: true skips the database copy saved before the update, " +
+            "so there is no restore point if it fails. Only set it when the user asks.",
+        ),
     })
     .strict(),
   output: actionOutput,
   annotations: write(false, { destructive: true }),
-  async run({ environment_id, mode, modules: mods }, { client, signal }) {
+  async run({ environment_id, mode, modules: mods, skip_safety_copy }, { client, signal }) {
     if (mode === "update_specific" && !mods) {
       throw new Error("update_specific needs at least one module name in modules.");
     }
     if (mode !== "update_specific" && mods) {
       throw new Error(`modules is only used with update_specific; ${mode} does not take a module list.`);
     }
-    const body = mods ? { mode, modules: mods } : { mode };
+    if (mode === "pull_restart" && skip_safety_copy) {
+      throw new Error("skip_safety_copy is only used with update_all and update_specific; pull_restart takes no copy.");
+    }
+    const body = {
+      mode,
+      ...(mods ? { modules: mods } : {}),
+      ...(skip_safety_copy ? { skip_safety_copy: true } : {}),
+    };
     return runAction(client, apiPath`/environments/${environment_id}/quick-update`, "Quick update", signal, body);
   },
 });

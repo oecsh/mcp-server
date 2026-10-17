@@ -301,6 +301,23 @@ const cases: Case[] = [
   },
   {
     tool: "oecsh_quick_update_environment",
+    args: { environment_id: ENV, mode: "update_specific", modules: ["sale_custom"], skip_safety_copy: true },
+    routes: { [`POST /environments/${ENV}/quick-update`]: actionRow },
+    expect: {
+      method: "POST",
+      path: `/environments/${ENV}/quick-update`,
+      body: { mode: "update_specific", modules: ["sale_custom"], skip_safety_copy: true },
+      idempotency: "Idempotency-Key",
+    },
+  },
+  {
+    tool: "oecsh_quick_update_environment",
+    args: { environment_id: ENV, mode: "update_all", skip_safety_copy: false },
+    routes: { [`POST /environments/${ENV}/quick-update`]: actionRow },
+    expect: { method: "POST", path: `/environments/${ENV}/quick-update`, body: { mode: "update_all" }, idempotency: "Idempotency-Key" },
+  },
+  {
+    tool: "oecsh_quick_update_environment",
     args: { environment_id: ENV, mode: "pull_restart" },
     routes: { [`POST /environments/${ENV}/quick-update`]: actionRow },
     expect: { method: "POST", path: `/environments/${ENV}/quick-update`, body: { mode: "pull_restart" }, idempotency: "Idempotency-Key" },
@@ -655,6 +672,12 @@ describe("tool results", () => {
       modules: ["a"],
     });
     expect(reinit.isError).toBe(true);
+    const noCopy = await call(client, "oecsh_quick_update_environment", {
+      environment_id: ENV,
+      mode: "pull_restart",
+      skip_safety_copy: true,
+    });
+    expect(text(noCopy)).toContain("pull_restart takes no copy");
     expect(api.calls).toHaveLength(0);
   });
 
