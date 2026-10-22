@@ -110,7 +110,8 @@ export const quickUpdateEnvironment = defineTool({
     "Pulls the latest code into a running environment and restarts it, optionally updating all or some " +
     "modules (faster than a full deploy, no rebuild). Modes: pull_restart, update_all, update_specific " +
     "(needs modules). Module updates first save a copy of the database on the server as a restore point; " +
-    "skip_safety_copy leaves it out. Returns a task to follow with oecsh_wait_for_task.",
+    "skip_safety_copy leaves it out. A running backup refuses the update; ignore_running_backup goes ahead " +
+    "and that backup fails. Returns a task to follow with oecsh_wait_for_task.",
   tier: "write",
   input: z
     .object({
@@ -126,11 +127,19 @@ export const quickUpdateEnvironment = defineTool({
           "update_all / update_specific only: true skips the database copy saved before the update, " +
             "so there is no restore point if it fails. Only set it when the user asks.",
         ),
+      ignore_running_backup: z
+        .boolean()
+        .optional()
+        .describe(
+          "true goes ahead while a backup of the environment is queued or running; that backup fails when " +
+            "the environment restarts and must be run again. Deploys, restores and clones still refuse. " +
+            "Only set it when the user asks.",
+        ),
     })
     .strict(),
   output: actionOutput,
   annotations: write(false, { destructive: true }),
-  async run({ environment_id, mode, modules: mods, skip_safety_copy }, { client, signal }) {
+  async run({ environment_id, mode, modules: mods, skip_safety_copy, ignore_running_backup }, { client, signal }) {
     if (mode === "update_specific" && !mods) {
       throw new Error("update_specific needs at least one module name in modules.");
     }
@@ -144,6 +153,7 @@ export const quickUpdateEnvironment = defineTool({
       mode,
       ...(mods ? { modules: mods } : {}),
       ...(skip_safety_copy ? { skip_safety_copy: true } : {}),
+      ...(ignore_running_backup ? { ignore_running_backup: true } : {}),
     };
     return runAction(client, apiPath`/environments/${environment_id}/quick-update`, "Quick update", signal, body);
   },

@@ -318,6 +318,23 @@ const cases: Case[] = [
   },
   {
     tool: "oecsh_quick_update_environment",
+    args: { environment_id: ENV, mode: "pull_restart", ignore_running_backup: true },
+    routes: { [`POST /environments/${ENV}/quick-update`]: actionRow },
+    expect: {
+      method: "POST",
+      path: `/environments/${ENV}/quick-update`,
+      body: { mode: "pull_restart", ignore_running_backup: true },
+      idempotency: "Idempotency-Key",
+    },
+  },
+  {
+    tool: "oecsh_quick_update_environment",
+    args: { environment_id: ENV, mode: "update_all", ignore_running_backup: false },
+    routes: { [`POST /environments/${ENV}/quick-update`]: actionRow },
+    expect: { method: "POST", path: `/environments/${ENV}/quick-update`, body: { mode: "update_all" }, idempotency: "Idempotency-Key" },
+  },
+  {
+    tool: "oecsh_quick_update_environment",
     args: { environment_id: ENV, mode: "pull_restart" },
     routes: { [`POST /environments/${ENV}/quick-update`]: actionRow },
     expect: { method: "POST", path: `/environments/${ENV}/quick-update`, body: { mode: "pull_restart" }, idempotency: "Idempotency-Key" },
