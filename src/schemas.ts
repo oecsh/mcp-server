@@ -198,6 +198,7 @@ export const TICKET_STATUSES = [
   "in_progress",
   "waiting_for_customer",
   "waiting_for_admin",
+  "planned",
   "resolved",
   "closed",
 ] as const;
