@@ -139,6 +139,18 @@ const cases: Case[] = [
     expect: { method: "GET", path: `/environments/${ENV}/deployments`, query: { limit: "3" } },
   },
   {
+    tool: "oecsh_list_tasks",
+    args: { environment_id: ENV, type: "clone", status: "running", limit: 3 },
+    routes: { [`GET /environments/${ENV}/tasks`]: cursorPage([taskRow({ type: "clone", target_environment_id: ENV })]) },
+    expect: { method: "GET", path: `/environments/${ENV}/tasks`, query: { type: "clone", status: "running", limit: "3" } },
+  },
+  {
+    tool: "oecsh_list_clones",
+    args: { environment_id: ENV, active: true, limit: 3 },
+    routes: { [`GET /environments/${ENV}/clones`]: cursorPage([{ id: TASK, status: "pending", queued: true }]) },
+    expect: { method: "GET", path: `/environments/${ENV}/clones`, query: { active: "true", limit: "3" } },
+  },
+  {
     tool: "oecsh_get_task",
     args: { task_id: TASK },
     routes: { [`GET /deployments/${TASK}`]: taskRow() },
@@ -749,6 +761,8 @@ describe("tool results", () => {
     ["oecsh_get_task", { task_id: TASK }, { [`GET /deployments/${TASK}`]: taskRow({ status: "failed", error_message: "x" }) }],
     ["oecsh_wait_for_task", { task_id: TASK }, { [`GET /deployments/${TASK}`]: taskRow({ status: "failed", error_message: "x" }) }],
     ["oecsh_list_deployments", { environment_id: ENV }, { [`GET /environments/${ENV}/deployments`]: cursorPage([taskRow({ error_message: "x" })]) }],
+    ["oecsh_list_tasks", { environment_id: ENV }, { [`GET /environments/${ENV}/tasks`]: cursorPage([taskRow({ error_message: "x" })]) }],
+    ["oecsh_list_clones", { environment_id: ENV }, { [`GET /environments/${ENV}/clones`]: cursorPage([{ id: TASK, error_message: "x" }]) }],
     ["oecsh_list_backups", { environment_id: ENV }, { [`GET /environments/${ENV}/backups`]: backupList([{ ...backupRow, notes: "x" }]) }],
     ["oecsh_get_backup", { backup_id: BKP }, { [`GET /backups/${BKP}`]: { ...backupRow, notes: "x", notice: "follow me" } }],
     ["oecsh_list_support_tickets", {}, { "GET /support/tickets": cursorPage([ticketRow]) }],

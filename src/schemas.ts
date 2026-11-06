@@ -72,6 +72,11 @@ export const environment = z.looseObject({
   server_id: s(),
   custom_domain: s(),
   custom_domain_verified: b(),
+  auto_deploy: z
+    .looseObject({ enabled: b(), branch_patterns: z.array(z.string()).nullable().optional(), update_modules: b(), cooldown_minutes: n() })
+    .nullable()
+    .optional(),
+  active_clone: z.looseObject({ id: s(), status: s(), queued: b(), progress_percent: n(), current_step: s() }).nullable().optional(),
   created_at: s(),
   updated_at: s(),
 });
@@ -100,6 +105,29 @@ export const task = z.looseObject({
   completed_at: s(),
   duration_seconds: n(),
   error_message: s(),
+  target_environment_id: s(),
+  clone_operation_id: s(),
+});
+
+export const cloneOperation = z.looseObject({
+  id: z.string(),
+  status: s(),
+  queued: b(),
+  source_environment_id: s(),
+  target_environment_id: s(),
+  target_name: s(),
+  task_id: s(),
+  progress_percent: n(),
+  current_step: s(),
+  steps_completed: n(),
+  total_steps: n(),
+  cancel_requested: b(),
+  started_at: s(),
+  completed_at: s(),
+  duration_seconds: n(),
+  error_message: s(),
+  error_step: s(),
+  created_at: s(),
 });
 
 export const backup = z.looseObject({
@@ -190,6 +218,25 @@ export const actionResult = {
 // Values the API checks too; listing them here lets the agent see the choices
 // in the tool schema instead of learning them from a 422.
 export const ENVIRONMENT_STATUSES = ["pending", "cloning", "deploying", "running", "stopped", "paused", "error"] as const;
+export const TASK_TYPES = [
+  "deploy",
+  "redeploy",
+  "clone",
+  "quick_update",
+  "backup",
+  "restore",
+  "start",
+  "stop",
+  "restart",
+  "pause",
+  "resume",
+  "destroy",
+  "sync_status",
+  "module_deploy",
+  "module_sync",
+  "module_deploy_all",
+] as const;
+export const TASK_STATUSES = ["pending", "queued", "running", "completed", "failed", "cancelled", "retrying"] as const;
 export const BACKUP_STATUSES = ["pending", "in_progress", "uploading", "completed", "failed", "cancelled", "expired"] as const;
 export const BACKUP_TYPES = ["manual", "scheduled", "pre_restore", "pre_upgrade", "pre_destroy"] as const;
 export const RETENTION_TYPES = ["daily", "weekly", "monthly", "yearly", "permanent"] as const;

@@ -15,7 +15,7 @@ import { getOrganization, revokeApiKey } from "./org.js";
 import { createProject, deleteProject, getProject, listProjects, updateProject, updateProjectRepository } from "./projects.js";
 import { getServer, listServers } from "./servers.js";
 import { getSupportTicket, listSupportTickets } from "./support.js";
-import { getTask, getTaskLog, listDeployments, waitForTask } from "./tasks.js";
+import { getTask, getTaskLog, listClones, listDeployments, listTasks, waitForTask } from "./tasks.js";
 import {
   createWebhook,
   deleteWebhook,
@@ -45,6 +45,8 @@ export const ALL_TOOLS: readonly ToolDef[] = [
   getEnvironmentMetrics,
   getRuntimeLogs,
   listDeployments,
+  listTasks,
+  listClones,
   getTask,
   waitForTask,
   getTaskLog,

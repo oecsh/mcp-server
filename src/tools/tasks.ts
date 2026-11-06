@@ -3,7 +3,7 @@ import { z } from "zod";
 import { apiPath } from "../client.js";
 import { OecshApiError } from "../errors.js";
 import { type ApiCursorPage, decodeCursor, fromApiCursorPage, pageOutputShape, paginationInput } from "../pagination.js";
-import { id, task } from "../schemas.js";
+import { cloneOperation, id, task, TASK_STATUSES, TASK_TYPES } from "../schemas.js";
 import { capLog, countLines, defineTool, MAX_LOG_CHARS, READ_UNTRUSTED, UNTRUSTED_TEXT_NOTICE, withNotice } from "./define.js";
 
 type Row = Record<string, unknown>;
@@ -58,12 +58,72 @@ export const listDeployments = defineTool({
   },
 });
 
+export const listTasks = defineTool({
+  name: "oecsh_list_tasks",
+  title: "List tasks",
+  description:
+    "Read only: lists an environment's tasks of every type, newest first: deploys, clones from or into it, " +
+    "Quick Updates, backups, restores and restarts, with status, progress, current step and error message; " +
+    "optionally filtered by type or status. For a clone, environment_id is the source and " +
+    "target_environment_id the target.",
+  tier: "read",
+  input: z
+    .object({
+      environment_id: id("Environment id"),
+      type: z.enum(TASK_TYPES).optional(),
+      status: z.enum(TASK_STATUSES).optional(),
+      ...paginationInput,
+    })
+    .strict(),
+  output: z.object({ notice, ...pageOutputShape(task) }),
+  annotations: READ_UNTRUSTED,
+  async run({ environment_id, type, status, limit, cursor }, { client, signal }) {
+    const tool = "oecsh_list_tasks";
+    const resource = `${environment_id}:${type ?? ""}:${status ?? ""}`;
+    const res = await client.get<ApiCursorPage<Row>>(apiPath`/environments/${environment_id}/tasks`, {
+      query: { type, status, limit, cursor: cursor ? decodeCursor(cursor, tool, resource, "api").c : undefined },
+      signal,
+    });
+    const out = fromApiCursorPage(res, tool, resource);
+    return { data: { notice: UNTRUSTED_TEXT_NOTICE, ...out }, summary: `${out.count} of ${out.total} tasks of environment ${environment_id}.` };
+  },
+});
+
+export const listClones = defineTool({
+  name: "oecsh_list_clones",
+  title: "List clones",
+  description:
+    "Read only: lists the clones from or into an environment, newest first, including clones still queued " +
+    "(queued is true, and current_step says what they wait for) and failed ones with their reason. A " +
+    "clone started by an automation rule may have no task, so it appears here and not in oecsh_list_tasks.",
+  tier: "read",
+  input: z
+    .object({
+      environment_id: id("Environment id"),
+      active: z.boolean().optional().describe("Only clones that are queued or running."),
+      ...paginationInput,
+    })
+    .strict(),
+  output: z.object({ notice, ...pageOutputShape(cloneOperation) }),
+  annotations: READ_UNTRUSTED,
+  async run({ environment_id, active, limit, cursor }, { client, signal }) {
+    const tool = "oecsh_list_clones";
+    const resource = `${environment_id}:${active ?? ""}`;
+    const res = await client.get<ApiCursorPage<Row>>(apiPath`/environments/${environment_id}/clones`, {
+      query: { active, limit, cursor: cursor ? decodeCursor(cursor, tool, resource, "api").c : undefined },
+      signal,
+    });
+    const out = fromApiCursorPage(res, tool, resource);
+    return { data: { notice: UNTRUSTED_TEXT_NOTICE, ...out }, summary: `${out.count} of ${out.total} clones of environment ${environment_id}.` };
+  },
+});
+
 export const getTask = defineTool({
   name: "oecsh_get_task",
   title: "Get task",
   description:
     "Read only: returns one task's status, progress, current step, timing and error message. Works for " +
-    "every task type (deploy, restart, start, stop, backup, destroy).",
+    "every task type (deploy, clone, Quick Update, restart, start, stop, backup, destroy).",
   tier: "read",
   input: z.object({ task_id: id("Task id") }).strict(),
   output: task.extend({ notice }),
@@ -180,7 +240,8 @@ export const getTaskLog = defineTool({
   title: "Get task log",
   description:
     "Read only: returns the step log and error of an environment's latest task, or of a given task " +
-    "(deploy, restart, backup...). This is the task's own log, not the Odoo server log.",
+    "(deploy, clone, restart, backup...), including clones into this environment. Deploys and clones have " +
+    "every step; other tasks only their message and error. This is the task's own log, not the Odoo server log.",
   tier: "read",
   input: z
     .object({

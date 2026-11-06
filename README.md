@@ -116,9 +116,11 @@ Every tool name starts with `oecsh_`. List tools take `limit` (1 to 100, default
 | `oecsh_get_runtime_logs` | The newest lines (up to 1000) of an environment's Odoo or PostgreSQL log, read live from its server |
 | `oecsh_get_environment_metrics` | Live CPU and memory of an environment's containers, and its disk sizes |
 | `oecsh_list_deployments` | An environment's deploy history |
+| `oecsh_list_tasks` | An environment's tasks of every type: clones, Quick Updates, backups and the rest |
+| `oecsh_list_clones` | Clones from or into an environment, including queued ones and failed ones with their reason |
 | `oecsh_get_task` | Any task's status and progress |
 | `oecsh_wait_for_task` | Waits until a task finishes |
-| `oecsh_get_task_log` | A task's step log and error |
+| `oecsh_get_task_log` | A task's step log and error; every step for deploys and clones |
 | `oecsh_list_backups`, `oecsh_get_backup` | An environment's backups; one backup |
 | `oecsh_list_webhooks`, `oecsh_get_webhook`, `oecsh_list_webhook_deliveries` | Outgoing webhooks and their recent deliveries |
 | `oecsh_list_changelog` | oec.sh release notes, newest first; optionally only those after a version (`since_version`) or since a date (`since_date`) |
@@ -154,7 +156,7 @@ Creating, changing and testing webhooks are opt-in because a webhook sends oec.s
 
 `oecsh_get_backup_download_links` answers with a warning: anyone holding a link can download the whole database until it expires, and the links are now in the conversation transcript.
 
-With a read-only key the server offers 19 tools (20 with `backup-download`). With a full-access key it offers 29, 40 with `destructive`, and 41 with both opt-ins.
+With a read-only key the server offers 24 tools (25 with `backup-download`). With a full-access key it offers 34, 45 with `destructive`, and 46 with both opt-ins.
 
 `oecsh_restore_backup` overwrites an environment's database and files with a completed backup of that same environment (a safety backup of the current data is taken first) and returns a task to follow. The name to type, for a restore or for download links, is the environment's current name; for a stopped or broken environment, which the API does not list, it is the name recorded with the backup (see `oecsh_get_backup`). Restoring into another environment stays in the dashboard.
 
