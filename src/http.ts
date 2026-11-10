@@ -313,7 +313,7 @@ const SHARED_BUCKET = "";
 // against the caller's address. Tool calls running at the same time are
 // capped per key, and per caller address when the API sees one (not for the
 // shared bucket: that would cap every user of the server together).
-const MAX_IN_FLIGHT_PER_KEY = 3;
+const MAX_IN_FLIGHT_PER_KEY = 6;
 const MAX_IN_FLIGHT_PER_CALLER = 10;
 
 function bearer(header: string | undefined): string | null {

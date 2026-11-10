@@ -357,16 +357,16 @@ describe("HTTP mode", () => {
         expect((await post(url, getTask, auth)).status).toBe(200);
         expect((await post(url, getTask, { authorization: `Bearer ${OTHER_RW_KEY}` })).status).toBe(200);
         api.hold();
-        const first = [0, 1, 2].map(() => post(url, getTask, auth));
-        await until(() => api.held() >= 3);
+        const first = [0, 1, 2, 3, 4, 5].map(() => post(url, getTask, auth));
+        await until(() => api.held() >= 6);
         const fourth = await post(url, getTask, auth);
         expect(fourth.status).toBe(429);
         expect(fourth.json.error.message).toContain("with this API key");
         expect(fourth.headers.get("retry-after")).toBe("1");
-        expect(api.held()).toBe(3);
+        expect(api.held()).toBe(6);
         // Another key is not held back by this one.
         const other = post(url, getTask, { authorization: `Bearer ${OTHER_RW_KEY}` });
-        await until(() => api.held() >= 4);
+        await until(() => api.held() >= 7);
         api.release();
         for (const r of await Promise.all([...first, other])) expect(r.status).toBe(200);
         await new Promise((r) => setTimeout(r, 10));
